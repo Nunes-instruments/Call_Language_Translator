@@ -1,0 +1,14 @@
+﻿{
+  "name": "@nunes/translation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "exports": "./src/index.ts",
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.7"
+  }
+}

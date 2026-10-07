@@ -80,55 +80,20 @@ async function translateHindiToTamilSafe(input: string) {
     protectedResult.entities
   );
 
-  let finalText = restoredText;
-
-  let integrity = verifyEntityIntegrity(
-    finalText,
+  const integrity = verifyEntityIntegrity(
+    restoredText,
     protectedResult.entities
   );
 
-  let entityRepairApplied = false;
-
-  if (!integrity.valid) {
-    const missingEntities = [...new Set(integrity.missing)];
-
-    console.warn("");
-    console.warn("==========================================");
-    console.warn(" NUNES ENTITY AUTO-REPAIR");
-    console.warn("==========================================");
-    console.warn(`MISSING : ${missingEntities.join(" | ")}`);
-    console.warn("ACTION  : RESTORE MISSING PROTECTED ENTITIES");
-
-    for (const missingEntity of missingEntities) {
-      if (!finalText.includes(missingEntity)) {
-        finalText = `${finalText.trim()} ${missingEntity}`.trim();
-      }
-    }
-
-    integrity = verifyEntityIntegrity(
-      finalText,
-      protectedResult.entities
-    );
-
-    entityRepairApplied = true;
-
-    console.warn(
-      `RESULT  : ${integrity.valid ? "REPAIRED" : "FAILED"}`
-    );
-    console.warn("==========================================");
-    console.warn("");
-  }
-
   if (!integrity.valid) {
     throw new Error(
-      `Entity integrity repair failed: ${integrity.missing.join(", ")}`
+      `Entity integrity failed: ${integrity.missing.join(", ")}`
     );
   }
 
   return {
-    text: finalText,
+    text: restoredText,
     latencyMs,
-    entityRepairApplied,
     entities:
       protectedResult.entities.map(
         entity => entity.original
@@ -572,17 +537,6 @@ app.get(
           },
         })
       );
-      if (streamId && socket.readyState === WebSocket.OPEN) {
-        socket.send(
-          JSON.stringify({
-            event: "checkpoint",
-            streamId,
-            name: "nunes-tts-complete"
-          })
-        );
-
-        console.log("PLIVO CHECKPOINT : SENT");
-      }
 
       console.log("");
       console.log("==========================================");
@@ -1092,23 +1046,6 @@ if (googleRecognizeStream) {
           return;
         }
 
-        if (message.event === "playedStream") {
-          const playbackMessage =
-            message as unknown as Record<string, unknown>;
-
-          console.log("");
-          console.log("==========================================");
-          console.log(" PLIVO PLAYBACK CONFIRMED");
-          console.log("==========================================");
-          console.log(`CALL   : ${callId ?? "unknown"}`);
-          console.log(`STREAM : ${String(playbackMessage.streamId ?? streamId ?? "unknown")}`);
-          console.log(`NAME   : ${String(playbackMessage.name ?? "unknown")}`);
-          console.log("AUDIO  : PLAYED");
-          console.log("==========================================");
-          console.log("");
-
-          return;
-        }
         if (message.event === "stop") {
           if (sarvamSocket) {
             sarvamSocket.close();
@@ -1393,7 +1330,6 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 start();
-
 
 
 

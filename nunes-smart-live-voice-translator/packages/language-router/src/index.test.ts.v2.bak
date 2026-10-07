@@ -1,0 +1,120 @@
+﻿import {
+  describe,
+  expect,
+  it
+} from "vitest";
+
+import {
+  decideMode,
+  SmartLanguageRouter
+} from "./index";
+
+describe("SmartLanguageRouter", () => {
+  it("Tamil+Tamil bypasses", () => {
+    expect(
+      decideMode("ta", "ta", 0.96)
+    ).toBe("DIRECT_BYPASS");
+  });
+
+  it("Tamil+Hindi translates", () => {
+    expect(
+      decideMode("ta", "hi", 0.94)
+    ).toBe("TRANSLATION_ACTIVE");
+  });
+
+  it("low single confidence waits", () => {
+    expect(
+      decideMode("ta", "hi", 0.50)
+    ).toBe("TEMPORARY_UNCERTAIN");
+  });
+
+  it("two consistent Hindi finals activate translation", () => {
+    const router =
+      new SmartLanguageRouter("ta");
+
+    const first =
+      router.observe("hi", 0.79);
+
+    expect(first.mode).toBe(
+      "TEMPORARY_UNCERTAIN"
+    );
+
+    const second =
+      router.observe("hi", 0.80);
+
+    expect(second.mode).toBe(
+      "TRANSLATION_ACTIVE"
+    );
+
+    expect(second.stableLanguage).toBe(
+      "hi"
+    );
+
+    expect(second.consecutiveCount).toBe(2);
+  });
+
+  it("strong Hindi detection activates immediately", () => {
+    const router =
+      new SmartLanguageRouter("ta");
+
+    const result =
+      router.observe("hi", 0.95);
+
+    expect(result.mode).toBe(
+      "TRANSLATION_ACTIVE"
+    );
+  });
+
+  it("two consistent Tamil finals activate direct bypass", () => {
+    const router =
+      new SmartLanguageRouter("ta");
+
+    router.observe("ta", 0.79);
+
+    const result =
+      router.observe("ta", 0.80);
+
+    expect(result.mode).toBe(
+      "DIRECT_BYPASS"
+    );
+
+    expect(result.stableLanguage).toBe(
+      "ta"
+    );
+  });
+
+  it("does not flip stable Hindi on one weak Tamil result", () => {
+    const router =
+      new SmartLanguageRouter("ta");
+
+    router.observe("hi", 0.95);
+
+    const result =
+      router.observe("ta", 0.55);
+
+    expect(result.mode).toBe(
+      "TRANSLATION_ACTIVE"
+    );
+
+    expect(result.stableLanguage).toBe(
+      "hi"
+    );
+  });
+
+  it("reset returns router to uncertain", () => {
+    const router =
+      new SmartLanguageRouter("ta");
+
+    router.observe("hi", 0.96);
+
+    router.reset();
+
+    expect(router.getMode()).toBe(
+      "TEMPORARY_UNCERTAIN"
+    );
+
+    expect(
+      router.getStableLanguage()
+    ).toBe("unknown");
+  });
+});

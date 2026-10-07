@@ -157,39 +157,7 @@ export class SmartLanguageRouter {
       sameAsStableLanguage &&
       safeConfidence >= this.holdThreshold;
 
-    /*
-     * V4.1 STRONG OPPOSITE-LANGUAGE SWITCH
-     *
-     * The rolling candidate can remain on the previous
-     * language for one utterance because older observations
-     * are still inside the rolling window.
-     *
-     * Example:
-     *   stable = Hindi
-     *   new observation = Tamil @ 1.00
-     *
-     * For a very strong new observation, switch using the
-     * CURRENT observation rather than waiting for the
-     * rolling candidate to change.
-     *
-     * Weak/noisy opposite detections still use hysteresis.
-     */
-
-    const strongOppositeLanguage =
-      language !== "unknown" &&
-      this.stableLanguage !== "unknown" &&
-      language !== this.stableLanguage &&
-      safeConfidence >= 0.95;
-
-    if (strongOppositeLanguage) {
-      this.stableLanguage = language;
-
-      this.currentMode =
-        this.staffLanguage === language
-          ? "DIRECT_BYPASS"
-          : "TRANSLATION_ACTIVE";
-    }
-    else if (
+    if (
       hasStrongSingleDetection ||
       hasStableRollingDetection ||
       canHoldExistingLanguage
@@ -645,4 +613,3 @@ export function detectMixedLanguage(
     hindiScore
   };
 }
-

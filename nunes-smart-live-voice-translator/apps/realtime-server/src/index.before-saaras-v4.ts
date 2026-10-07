@@ -80,55 +80,20 @@ async function translateHindiToTamilSafe(input: string) {
     protectedResult.entities
   );
 
-  let finalText = restoredText;
-
-  let integrity = verifyEntityIntegrity(
-    finalText,
+  const integrity = verifyEntityIntegrity(
+    restoredText,
     protectedResult.entities
   );
 
-  let entityRepairApplied = false;
-
-  if (!integrity.valid) {
-    const missingEntities = [...new Set(integrity.missing)];
-
-    console.warn("");
-    console.warn("==========================================");
-    console.warn(" NUNES ENTITY AUTO-REPAIR");
-    console.warn("==========================================");
-    console.warn(`MISSING : ${missingEntities.join(" | ")}`);
-    console.warn("ACTION  : RESTORE MISSING PROTECTED ENTITIES");
-
-    for (const missingEntity of missingEntities) {
-      if (!finalText.includes(missingEntity)) {
-        finalText = `${finalText.trim()} ${missingEntity}`.trim();
-      }
-    }
-
-    integrity = verifyEntityIntegrity(
-      finalText,
-      protectedResult.entities
-    );
-
-    entityRepairApplied = true;
-
-    console.warn(
-      `RESULT  : ${integrity.valid ? "REPAIRED" : "FAILED"}`
-    );
-    console.warn("==========================================");
-    console.warn("");
-  }
-
   if (!integrity.valid) {
     throw new Error(
-      `Entity integrity repair failed: ${integrity.missing.join(", ")}`
+      `Entity integrity failed: ${integrity.missing.join(", ")}`
     );
   }
 
   return {
-    text: finalText,
+    text: restoredText,
     latencyMs,
-    entityRepairApplied,
     entities:
       protectedResult.entities.map(
         entity => entity.original
@@ -502,141 +467,14 @@ app.get(
       );
     };
 
-    const synthesizeTamilAndPlay = async (text: string) => {
-      if (!text.trim()) return;
-
-      if (socket.readyState !== WebSocket.OPEN) {
-        request.log.warn(
-          { callId },
-          "PLIVO SOCKET NOT OPEN FOR TTS"
-        );
-        return;
-      }
-
-      const startedAt = Date.now();
-
-      const response = await fetch(
-        "https://api.sarvam.ai/text-to-speech",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "api-subscription-key": SARVAM_API_KEY,
-          },
-          body: JSON.stringify({
-            text: text.trim(),
-            target_language_code: "ta-IN",
-            language_code: "ta-IN",
-            speaker: "shubh",
-            model: "bulbul:v3",
-            pace: 1.0,
-            speech_sample_rate: 8000,
-            output_audio_codec: "mulaw"
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-
-        throw new Error(
-          `Sarvam TTS HTTP ${response.status}: ${errorText}`
-        );
-      }
-
-      const body = await response.json() as {
-        request_id?: string;
-        audios?: string[];
-      };
-
-      const audio = body.audios?.[0];
-
-      if (!audio) {
-        throw new Error("Sarvam TTS returned no audio");
-      }
-
-      /*
-       * Plivo bidirectional stream is already configured as:
-       * audio/x-mulaw;rate=8000
-       *
-       * Sarvam returns base64 encoded raw mu-law audio,
-       * therefore no transcoding is required.
-       */
-      socket.send(
-        JSON.stringify({
-          event: "playAudio",
-          media: {
-            contentType: "audio/x-mulaw",
-            sampleRate: 8000,
-            payload: audio,
-          },
-        })
-      );
-      if (streamId && socket.readyState === WebSocket.OPEN) {
-        socket.send(
-          JSON.stringify({
-            event: "checkpoint",
-            streamId,
-            name: "nunes-tts-complete"
-          })
-        );
-
-        console.log("PLIVO CHECKPOINT : SENT");
-      }
-
-      console.log("");
-      console.log("==========================================");
-      console.log(" NUNES TAMIL TTS -> PLIVO");
-      console.log("==========================================");
-      console.log(`CALL       : ${callId ?? "unknown"}`);
-      console.log(`STREAM     : ${streamId ?? "unknown"}`);
-      console.log(`TEXT       : ${text}`);
-      console.log(`MODEL      : bulbul:v3`);
-      console.log(`VOICE      : shubh`);
-      console.log(`FORMAT     : MULAW / 8000 Hz`);
-      console.log(`TTS LATENCY: ${Date.now() - startedAt} ms`);
-      console.log("PLAY AUDIO : SENT");
-      console.log("==========================================");
-      console.log("");
-    };
     const connectSarvam = () => {
-      const sarvamKeyterms = encodeURIComponent(
-        JSON.stringify([
-          "Fluke",
-          "GE Druck",
-          "Druck",
-          "DPI 620G",
-          "Fluke pressure calibrator",
-          "GE Druck DPI 620G",
-          "pressure calibrator",
-          "temperature calibrator",
-          "process calibrator",
-          "loop calibrator",
-          "multifunction calibrator",
-          "dry block calibrator",
-          "pressure gauge",
-          "manometer",
-          "multimeter",
-          "oscilloscope",
-          "4-20 mA",
-          "GST",
-          "ASTM",
-          "ISO",
-          "quotation",
-          "delivery time",
-          "IndiaMART",
-          "Nunes Instrumentation"
-        ])
-      );
       const sarvamUrl =
         "wss://api.sarvam.ai/speech-to-text-realtime/ws" +
         "?language_code=auto" +
-        "&model=saaras:v4" +
-        "&mode=codemix" +
-        "&keyterms=" + sarvamKeyterms +
+        "&model=saaras:v3-realtime" +
         "&encoding=mulaw" +
         "&sample_rate=8000" +
-        "&stream_type=balanced" +
+        "&stream_type=fast" +
         "&endpointing=vad" +
         "&silence_duration_ms=500" +
         "&min_speech_duration_ms=250";
@@ -805,23 +643,6 @@ app.get(
                   }`
                 );
                 console.log("INTEGRITY : PASS");
-
-                try {
-                  await synthesizeTamilAndPlay(
-                    translated.text
-                  );
-                } catch (ttsError) {
-                  request.log.error(
-                    {
-                      callId,
-                      error:
-                        ttsError instanceof Error
-                          ? ttsError.message
-                          : String(ttsError)
-                    },
-                    "TAMIL TTS PLAYBACK FAILED"
-                  );
-                }
                 console.log("==========================================");
                 console.log("");
               } catch (error) {
@@ -1092,23 +913,6 @@ if (googleRecognizeStream) {
           return;
         }
 
-        if (message.event === "playedStream") {
-          const playbackMessage =
-            message as unknown as Record<string, unknown>;
-
-          console.log("");
-          console.log("==========================================");
-          console.log(" PLIVO PLAYBACK CONFIRMED");
-          console.log("==========================================");
-          console.log(`CALL   : ${callId ?? "unknown"}`);
-          console.log(`STREAM : ${String(playbackMessage.streamId ?? streamId ?? "unknown")}`);
-          console.log(`NAME   : ${String(playbackMessage.name ?? "unknown")}`);
-          console.log("AUDIO  : PLAYED");
-          console.log("==========================================");
-          console.log("");
-
-          return;
-        }
         if (message.event === "stop") {
           if (sarvamSocket) {
             sarvamSocket.close();
@@ -1393,9 +1197,6 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 start();
-
-
-
 
 
 

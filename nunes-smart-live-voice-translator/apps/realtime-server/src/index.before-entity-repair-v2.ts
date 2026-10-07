@@ -80,55 +80,20 @@ async function translateHindiToTamilSafe(input: string) {
     protectedResult.entities
   );
 
-  let finalText = restoredText;
-
-  let integrity = verifyEntityIntegrity(
-    finalText,
+  const integrity = verifyEntityIntegrity(
+    restoredText,
     protectedResult.entities
   );
 
-  let entityRepairApplied = false;
-
-  if (!integrity.valid) {
-    const missingEntities = [...new Set(integrity.missing)];
-
-    console.warn("");
-    console.warn("==========================================");
-    console.warn(" NUNES ENTITY AUTO-REPAIR");
-    console.warn("==========================================");
-    console.warn(`MISSING : ${missingEntities.join(" | ")}`);
-    console.warn("ACTION  : RESTORE MISSING PROTECTED ENTITIES");
-
-    for (const missingEntity of missingEntities) {
-      if (!finalText.includes(missingEntity)) {
-        finalText = `${finalText.trim()} ${missingEntity}`.trim();
-      }
-    }
-
-    integrity = verifyEntityIntegrity(
-      finalText,
-      protectedResult.entities
-    );
-
-    entityRepairApplied = true;
-
-    console.warn(
-      `RESULT  : ${integrity.valid ? "REPAIRED" : "FAILED"}`
-    );
-    console.warn("==========================================");
-    console.warn("");
-  }
-
   if (!integrity.valid) {
     throw new Error(
-      `Entity integrity repair failed: ${integrity.missing.join(", ")}`
+      `Entity integrity failed: ${integrity.missing.join(", ")}`
     );
   }
 
   return {
-    text: finalText,
+    text: restoredText,
     latencyMs,
-    entityRepairApplied,
     entities:
       protectedResult.entities.map(
         entity => entity.original

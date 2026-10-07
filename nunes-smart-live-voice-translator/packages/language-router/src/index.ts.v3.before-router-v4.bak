@@ -157,39 +157,7 @@ export class SmartLanguageRouter {
       sameAsStableLanguage &&
       safeConfidence >= this.holdThreshold;
 
-    /*
-     * V4.1 STRONG OPPOSITE-LANGUAGE SWITCH
-     *
-     * The rolling candidate can remain on the previous
-     * language for one utterance because older observations
-     * are still inside the rolling window.
-     *
-     * Example:
-     *   stable = Hindi
-     *   new observation = Tamil @ 1.00
-     *
-     * For a very strong new observation, switch using the
-     * CURRENT observation rather than waiting for the
-     * rolling candidate to change.
-     *
-     * Weak/noisy opposite detections still use hysteresis.
-     */
-
-    const strongOppositeLanguage =
-      language !== "unknown" &&
-      this.stableLanguage !== "unknown" &&
-      language !== this.stableLanguage &&
-      safeConfidence >= 0.95;
-
-    if (strongOppositeLanguage) {
-      this.stableLanguage = language;
-
-      this.currentMode =
-        this.staffLanguage === language
-          ? "DIRECT_BYPASS"
-          : "TRANSLATION_ACTIVE";
-    }
-    else if (
+    if (
       hasStrongSingleDetection ||
       hasStableRollingDetection ||
       canHoldExistingLanguage
@@ -444,119 +412,38 @@ export function detectMixedLanguage(
     };
   }
 
-  const words = tokenizeMixedText(cleanText);
+  if (TAMIL_SCRIPT.test(cleanText)) {
+    return {
+      language: "ta",
+      source: "native-script",
+      tamilScore: 10,
+      hindiScore: 0
+    };
+  }
+
+  if (DEVANAGARI_SCRIPT.test(cleanText)) {
+    return {
+      language: "hi",
+      source: "native-script",
+      tamilScore: 0,
+      hindiScore: 10
+    };
+  }
+
+  const words =
+    tokenizeMixedText(cleanText);
 
   let tamilScore = 0;
   let hindiScore = 0;
 
-  /*
-   * V4 IMPORTANT:
-   *
-   * Do NOT immediately classify the whole utterance as Tamil
-   * just because Saaras emitted Tamil characters.
-   *
-   * In codemix mode Hindi speech can sometimes be represented
-   * phonetically using Tamil script.
-   *
-   * We therefore combine:
-   *   1. native script evidence
-   *   2. Tanglish/Hinglish lexical evidence
-   *   3. Hindi phonetic cues written in Tamil script
-   *   4. provider language as supporting evidence
-   *
-   * English technical/business terms are neutral.
-   */
-
-  const hasTamilScript =
-    TAMIL_SCRIPT.test(cleanText);
-
-  const hasDevanagari =
-    DEVANAGARI_SCRIPT.test(cleanText);
-
-  if (hasTamilScript) {
-    tamilScore += 3;
-  }
-
-  if (hasDevanagari) {
-    hindiScore += 6;
-  }
-
   for (const word of words) {
     if (TANGLISH_WORDS.has(word)) {
-      tamilScore += 2;
+      tamilScore += 1;
     }
 
     if (HINGLISH_WORDS.has(word)) {
-      hindiScore += 2;
+      hindiScore += 1;
     }
-  }
-
-  /*
-   * Saaras codemix may transliterate Hindi sounds
-   * into Tamil characters.
-   *
-   * Examples observed in the real telephone test:
-   *   ஹை       ~= hai
-   *   ஜலதி     ~= jaldi
-   *   ஜஹி      ~= chahiye
-   *
-   * These are Hindi conversational cues, not Tamil meaning.
-   */
-
-  const tamilScriptHindiPatterns = [
-    /ஹை/u,
-    /ஹாய்/u,
-    /ஜலதி/u,
-    /ஜல்தி/u,
-    /ஜல்டி/u,
-    /ஜஹி/u,
-    /சாஹி/u,
-    /சாஹியே/u,
-    /சாஹியேய்/u,
-    /சஹா/u,
-    /சஹியே/u,
-    /முஜே/u,
-    /முஜ்ஹே/u,
-    /தோடா/u,
-    /தோட/u,
-    /ஜ்யாதா/u,
-    /ஜியாதா/u,
-    /க்யா/u,
-    /கித்னா/u,
-    /கித்னே/u,
-    /நஹி/u,
-    /நஹீ/u,
-    /பதாயே/u,
-    /பதாயியே/u
-  ];
-
-  let tamilScriptHindiHits = 0;
-
-  for (const pattern of tamilScriptHindiPatterns) {
-    if (pattern.test(cleanText)) {
-      tamilScriptHindiHits++;
-    }
-  }
-
-  /*
-   * One isolated phonetic hit is not enough to override
-   * genuine Tamil.
-   *
-   * Two or more Hindi phonetic cues are strong evidence
-   * of Hindi/Hinglish represented in Tamil script.
-   */
-
-  if (tamilScriptHindiHits >= 2) {
-    hindiScore += tamilScriptHindiHits * 3;
-
-    /*
-     * Reduce generic Tamil-script weight because in this
-     * situation script != spoken language.
-     */
-    tamilScore = Math.max(0, tamilScore - 2);
-  }
-  else if (tamilScriptHindiHits === 1) {
-    hindiScore += 2;
   }
 
   const normalizedProvider =
@@ -564,8 +451,8 @@ export function detectMixedLanguage(
       .toLowerCase();
 
   /*
-   * Provider is supporting evidence only.
-   * Transcript evidence remains stronger.
+   * Provider language is supporting evidence only.
+   * It must NOT override strong transcript evidence.
    */
 
   if (
@@ -589,8 +476,11 @@ export function detectMixedLanguage(
   }
 
   /*
-   * en-IN remains neutral because technical/business
-   * English is normal inside both Tanglish and Hinglish.
+   * Important:
+   * en-IN does not automatically mean English.
+   *
+   * Indian code-mixed speech often contains
+   * English technical/business vocabulary.
    */
 
   if (
@@ -605,38 +495,29 @@ export function detectMixedLanguage(
     };
   }
 
-  if (hindiScore > tamilScore) {
-    return {
-      language: "hi",
-      source:
-        hasDevanagari || tamilScriptHindiHits >= 2
-          ? "native-script"
-          : normalizedProvider.startsWith("hi")
-            ? "provider"
-            : "romanized",
-      tamilScore,
-      hindiScore
-    };
-  }
-
   if (tamilScore > hindiScore) {
     return {
       language: "ta",
       source:
-        hasTamilScript
-          ? "native-script"
-          : normalizedProvider.startsWith("ta")
-            ? "provider"
-            : "romanized",
+        normalizedProvider.startsWith("ta")
+          ? "provider"
+          : "romanized",
       tamilScore,
       hindiScore
     };
   }
 
-  /*
-   * Tie safety:
-   * Never guess when Tamil/Hindi evidence is equal.
-   */
+  if (hindiScore > tamilScore) {
+    return {
+      language: "hi",
+      source:
+        normalizedProvider.startsWith("hi")
+          ? "provider"
+          : "romanized",
+      tamilScore,
+      hindiScore
+    };
+  }
 
   return {
     language: "unknown",
@@ -645,4 +526,3 @@ export function detectMixedLanguage(
     hindiScore
   };
 }
-
