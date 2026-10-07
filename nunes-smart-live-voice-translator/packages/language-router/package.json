@@ -1,13 +1,14 @@
-{
-  "name": "@nunes/language-router",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
-  },
-  "devDependencies": {
-    "vitest": "^3.0.7",
-    "typescript": "^5.7.3"
-  }
+﻿{
+    "name":  "@nunes/language-router",
+    "private":  true,
+    "type":  "module",
+    "scripts":  {
+                    "test":  "vitest run",
+                    "typecheck":  "tsc --noEmit"
+                },
+    "devDependencies":  {
+                            "vitest":  "^3.0.7",
+                            "typescript":  "^5.7.3"
+                        },
+    "exports":  "./src/index.ts"
 }

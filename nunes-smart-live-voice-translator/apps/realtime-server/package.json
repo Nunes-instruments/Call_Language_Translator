@@ -12,10 +12,11 @@
   "dependencies": {
     "@fastify/formbody": "^9.0.0",
     "@fastify/websocket": "^11.0.1",
+    "@nunes/language-router": "file:../../packages/language-router",
     "dotenv": "^18.0.6",
     "fastify": "^5.2.1",
     "postgres": "^3.4.9",
-    "ws": "^8.18.0"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

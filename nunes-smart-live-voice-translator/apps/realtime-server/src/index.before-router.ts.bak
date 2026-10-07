@@ -1,5 +1,4 @@
 ﻿import Fastify from "fastify";
-import { decideMode } from "@nunes/language-router";
 import websocket from "@fastify/websocket";
 import formbody from "@fastify/formbody";
 import postgres from "postgres";
@@ -288,14 +287,6 @@ app.get(
 
     let sarvamSocket: WebSocket | null = null;
     let sarvamReady = false;
-
-      let currentRouterMode:
-        | "DIRECT_BYPASS"
-        | "TRANSLATION_ACTIVE"
-        | "TEMPORARY_UNCERTAIN" = "TEMPORARY_UNCERTAIN";
-
-      const STAFF_LANGUAGE: "ta" | "hi" = "ta";
-      const ROUTER_THRESHOLD = 0.85;
     const pendingAudio: string[] = [];
 
     const connectSarvam = () => {
@@ -371,95 +362,6 @@ app.get(
             console.log("========== SARVAM FINAL RAW ==========");
             console.log(JSON.stringify(result, null, 2));
             console.log("======================================");
-          }
-
-          if (
-            transcript?.trim() &&
-            event === "transcript.final"
-          ) {
-            const rawConfidence = result.language_confidence;
-
-            const confidence =
-              typeof rawConfidence === "number"
-                ? rawConfidence
-                : 0;
-
-            const normalizedLanguage:
-              | "ta"
-              | "hi"
-              | "unknown" =
-              language === "ta-IN" || language === "ta"
-                ? "ta"
-                : language === "hi-IN" || language === "hi"
-                  ? "hi"
-                  : "unknown";
-
-            const nextMode = decideMode(
-              STAFF_LANGUAGE,
-              normalizedLanguage,
-              confidence,
-              ROUTER_THRESHOLD
-            );
-
-            currentRouterMode = nextMode;
-
-            console.log("");
-            console.log("==========================================");
-            console.log(" NUNES SMART LANGUAGE ROUTER");
-            console.log("==========================================");
-            console.log(`CALL              : ${callId ?? "unknown"}`);
-            console.log(`STAFF LANGUAGE    : ${STAFF_LANGUAGE}`);
-            console.log(`CUSTOMER LANGUAGE : ${normalizedLanguage}`);
-            console.log(`RAW LANGUAGE      : ${language}`);
-            console.log(`CONFIDENCE        : ${confidence}`);
-            console.log(`ROUTER MODE       : ${currentRouterMode}`);
-            console.log("==========================================");
-            console.log("");
-
-            if (callId) {
-              void db`
-                UPDATE call_sessions
-                SET
-                  customer_language = ${normalizedLanguage},
-                  mode = ${currentRouterMode},
-                  translated = ${currentRouterMode === "TRANSLATION_ACTIVE"},
-                  updated_at = NOW()
-                WHERE provider_call_id = ${callId}
-                   OR id::text = ${callId}
-              `.catch((error) => {
-                request.log.error(
-                  error,
-                  "SMART ROUTER DATABASE UPDATE FAILED"
-                );
-              });
-
-              void db`
-                INSERT INTO call_events (
-                  call_session_id,
-                  event_type,
-                  event_data
-                )
-                SELECT
-                  id,
-                  'LANGUAGE_ROUTER_DECISION',
-                  ${JSON.stringify({
-                    staffLanguage: STAFF_LANGUAGE,
-                    customerLanguage: normalizedLanguage,
-                    rawLanguage: language,
-                    confidence,
-                    mode: currentRouterMode
-                  })}::jsonb
-                FROM call_sessions
-                WHERE provider_call_id = ${callId}
-                   OR id::text = ${callId}
-                LIMIT 1
-              `.catch((error) => {
-                request.log.error(
-                  error,
-                  "SMART ROUTER EVENT INSERT FAILED"
-                );
-              });
-            }
           }
 
           if (transcript?.trim()) {
@@ -909,7 +811,6 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 start();
-
 
 
 
