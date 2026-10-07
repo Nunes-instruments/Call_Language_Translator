@@ -1,0 +1,1 @@
+export interface TelephonyProvider{verifyWebhook(headers:Record<string,string|undefined>,body:string):Promise<boolean>;answerCall(input:{providerCallId:string,realtimeUrl:string}):Promise<void>;hangup(providerCallId:string):Promise<void>}
