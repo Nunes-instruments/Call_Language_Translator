@@ -1,4 +1,4 @@
-﻿import Fastify from "fastify";
+import Fastify from "fastify";
 import { SmartLanguageRouter, detectMixedLanguage } from "@nunes/language-router";
 import {
   protectEntities,
@@ -349,18 +349,27 @@ app.all("/plivo/inbound", async (request, reply) => {
       Next step adds bidirectional media streaming.
     */
 
-    const websocketUrl =
-      PUBLIC_BASE_URL
-        .replace(/^https:/, "wss:")
-        .replace(/^http:/, "ws:");
+    const staffPhoneNumber =
+      process.env.STAFF_PHONE_NUMBER?.trim();
+
+    const plivoNumber =
+      process.env.PLIVO_NUMBER?.trim();
+
+    if (!staffPhoneNumber) {
+      throw new Error("STAFF_PHONE_NUMBER is missing");
+    }
+
+    if (!plivoNumber) {
+      throw new Error("PLIVO_NUMBER is missing");
+    }
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Stream bidirectional="true"
-          keepCallAlive="true"
-          contentType="audio/x-mulaw;rate=8000"
-          statusCallbackUrl="${escapeXml(`${PUBLIC_BASE_URL}/plivo/stream-status`)}"
-          statusCallbackMethod="POST">${escapeXml(`${websocketUrl}/plivo/stream`)}</Stream>
+  <Dial callerId="${escapeXml(plivoNumber)}"
+        callbackUrl="${escapeXml(`${PUBLIC_BASE_URL}/plivo/dial-status`)}"
+        callbackMethod="POST">
+    <Number>${escapeXml(staffPhoneNumber)}</Number>
+  </Dial>
 </Response>`;
 
     reply
@@ -383,6 +392,50 @@ app.all("/plivo/inbound", async (request, reply) => {
   }
 });
 
+// ============================================================
+// PLIVO DIAL DIAGNOSTICS
+// ============================================================
+
+app.all("/plivo/dial-status", async (request, reply) => {
+  const body =
+    request.body && typeof request.body === "object"
+      ? (request.body as Record<string, unknown>)
+      : {};
+
+  const getText = (key: string) =>
+    typeof body[key] === "string"
+      ? (body[key] as string)
+      : "unknown";
+
+  const maskPhone = (value: string) => {
+    if (!value || value === "unknown") return "unknown";
+    if (value.length <= 4) return "****";
+    return `${"*".repeat(Math.max(0, value.length - 4))}${value.slice(-4)}`;
+  };
+
+  console.log("");
+  console.log("==========================================");
+  console.log(" NUNES PLIVO DIAL DIAGNOSTICS");
+  console.log("==========================================");
+  console.log("DIAL ACTION     :", getText("DialAction"));
+  console.log("DIAL STATUS     :", getText("DialStatus"));
+  console.log("A-LEG UUID      :", getText("DialALegUUID"));
+  console.log("B-LEG UUID      :", getText("DialBLegUUID"));
+  console.log("B-LEG STATUS    :", getText("DialBLegStatus"));
+  console.log("HANGUP CAUSE    :", getText("HangupCause"));
+  console.log("HANGUP CODE     :", getText("HangupCauseCode"));
+  console.log("DIRECTION       :", getText("Direction"));
+  console.log("FROM            :", maskPhone(getText("From")));
+  console.log("TO              :", maskPhone(getText("To")));
+  console.log("DURATION        :", getText("Duration"));
+  console.log("BILL DURATION   :", getText("BillDuration"));
+  console.log("==========================================");
+  console.log("");
+
+  reply.code(200).send({
+    ok: true,
+  });
+});
 // ============================================================
 // PLIVO AUDIO STREAM
 // ============================================================
@@ -1393,6 +1446,8 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 start();
+
+
 
 
 
