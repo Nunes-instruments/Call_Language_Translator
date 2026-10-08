@@ -21,3 +21,5 @@ node_modules/
 dist/
 coverage/
 *.log
+
+apps/realtime-server/src/index.before-*.ts
