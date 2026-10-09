@@ -30,6 +30,11 @@ export class CrossLegAudioDispatcher {
       throw new Error("Stream ID already registered to another socket");
     }
 
+    for (const [registeredStreamId, registeredSocket] of this.sockets) {
+      if (registeredStreamId !== streamId && registeredSocket === socket) {
+        throw new Error("Socket already registered to another stream ID");
+      }
+    }
     this.sockets.set(streamId, socket);
   }
 
