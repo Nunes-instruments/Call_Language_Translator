@@ -69,6 +69,22 @@ export class TwoLegAudioCoordinator {
       throw new Error("Stream ID required");
     }
 
+    for (const [otherSessionId, otherSession] of this.sessions) {
+      if (otherSessionId === sessionId) {
+        continue;
+      }
+
+      if (
+        (otherSession.customer.connected &&
+          otherSession.customer.streamId === streamId) ||
+        (otherSession.staff.connected &&
+          otherSession.staff.streamId === streamId)
+      ) {
+        throw new Error(
+          "Stream ID already assigned to another active session"
+        );
+      }
+    }
     const current = session[role];
     const opposite = session[this.opposite(role)];
 
