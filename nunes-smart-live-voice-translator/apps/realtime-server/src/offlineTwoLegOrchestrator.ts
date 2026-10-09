@@ -1,4 +1,4 @@
-﻿import {
+import {
   TwoLegAudioCoordinator,
   type CallLegRole
 } from "./twoLegAudioCoordinator";
@@ -52,8 +52,12 @@ export class OfflineTwoLegOrchestrator {
     return this.coordinator.get(sessionId);
   }
 
-  detach(sessionId: string, role: CallLegRole) {
-    this.coordinator.detachStream(sessionId, role);
+  detach(
+    sessionId: string,
+    role: CallLegRole,
+    streamId?: string
+  ) {
+    this.coordinator.detachStream(sessionId, role, streamId);
     return this.coordinator.get(sessionId);
   }
 

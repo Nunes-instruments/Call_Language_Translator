@@ -138,11 +138,18 @@ export class TwoLegAudioCoordinator {
 
   detachStream(
     sessionId: string,
-    role: CallLegRole
+    role: CallLegRole,
+    streamId?: string
   ): void {
     const session = this.requireSession(sessionId);
-    session[role].streamId = null;
-    session[role].connected = false;
+    const current = session[role];
+
+    if (streamId !== undefined && current.streamId !== streamId) {
+      return;
+    }
+
+    current.streamId = null;
+    current.connected = false;
     session.translationEnabled = false;
   }
 
