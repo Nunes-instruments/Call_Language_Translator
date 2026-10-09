@@ -6,6 +6,7 @@ export type PlivoSignatureInput = {
   nonce?: string;
   signature?: string;
   authToken?: string;
+  params?: Record<string, string | string[]>;
 };
 
 export type PlivoSignatureResult =
@@ -75,7 +76,8 @@ export function verifyPlivoWebhookSignature(
       input.url,
       input.nonce,
       input.authToken,
-      input.signature
+      input.signature,
+      input.params ?? {}
     );
 
     return valid

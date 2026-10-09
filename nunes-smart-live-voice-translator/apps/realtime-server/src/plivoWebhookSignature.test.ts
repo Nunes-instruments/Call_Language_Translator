@@ -122,7 +122,8 @@ describe("Offline Plivo webhook signature verification", () => {
       validInput.url,
       validInput.nonce,
       validInput.authToken,
-      validInput.signature
+      validInput.signature,
+      {}
     );
   });
 
