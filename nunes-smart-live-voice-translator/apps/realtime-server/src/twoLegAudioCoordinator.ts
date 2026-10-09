@@ -1,4 +1,4 @@
-﻿export type CallLegRole = "customer" | "staff";
+export type CallLegRole = "customer" | "staff";
 
 export type CallLeg = {
   callUuid: string;
@@ -65,12 +65,30 @@ export class TwoLegAudioCoordinator {
   ): void {
     const session = this.requireSession(sessionId);
 
-    if (!streamId) {
+    if (!streamId || !streamId.trim()) {
       throw new Error("Stream ID required");
     }
 
-    session[role].streamId = streamId;
-    session[role].connected = true;
+    const current = session[role];
+    const opposite = session[this.opposite(role)];
+
+    if (
+      opposite.connected &&
+      opposite.streamId === streamId
+    ) {
+      throw new Error(
+        "Stream ID already assigned to opposite call leg"
+      );
+    }
+
+    if (current.connected) {
+      throw new Error(
+        "Active stream must disconnect before replacement"
+      );
+    }
+
+    current.streamId = streamId;
+    current.connected = true;
   }
 
   opposite(role: CallLegRole): CallLegRole {
