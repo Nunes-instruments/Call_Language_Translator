@@ -1,4 +1,4 @@
-﻿import {
+import {
   TwoLegAudioCoordinator,
   type CallLegRole
 } from "./twoLegAudioCoordinator";
@@ -20,11 +20,26 @@ export class CrossLegAudioDispatcher {
   ) {}
 
   register(streamId: string, socket: AudioSocket): void {
-    if (!streamId) throw new Error("Stream ID required");
+    if (!streamId || !streamId.trim()) {
+      throw new Error("Stream ID required");
+    }
+
+    const existing = this.sockets.get(streamId);
+
+    if (existing && existing !== socket) {
+      throw new Error("Stream ID already registered to another socket");
+    }
+
     this.sockets.set(streamId, socket);
   }
 
-  unregister(streamId: string): void {
+  unregister(streamId: string, socket?: AudioSocket): void {
+    const existing = this.sockets.get(streamId);
+
+    if (socket !== undefined && existing !== socket) {
+      return;
+    }
+
     this.sockets.delete(streamId);
   }
 
