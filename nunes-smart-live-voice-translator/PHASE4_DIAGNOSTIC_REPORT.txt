@@ -1,0 +1,133 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261009155020
+Username: DESKTOP-F8G3T2C\NUNES
+RunAs User: DESKTOP-F8G3T2C\NUNES
+Configuration Name: 
+Machine: DESKTOP-F8G3T2C (Microsoft Windows NT 10.0.26200.0)
+Host Application: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noexit -command try { . "c:\Users\NUNES\AppData\Local\Programs\Microsoft VS Code\07f806f999\resources\app\out\vs\workbench\contrib\terminal\common\scripts\shellIntegration.ps1" } catch {}
+Process ID: 1672
+PSVersion: 5.1.26100.9549
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9549
+BuildVersion: 10.0.26100.9549
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+
+========================================
+ NUNES SMART LIVE VOICE TRANSLATOR
+ PHASE 4 COMPLETE DIAGNOSTICS
+========================================
+
+[1] PROJECT STATUS
+
+
+
+[2] MODIFIED FILES
+
+
+
+[3] PHASE REPORTS
+
+
+[4] DASHBOARD FILES
+
+[5] DATABASE AND MIGRATIONS
+PS>TerminatingError(): "The pipeline has been stopped."
+>> TerminatingError(): "The pipeline has been stopped."
+>> TerminatingError(): "The pipeline has been stopped."
+PS C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator> & {
+    $ErrorActionPreference = "Continue"
+
+    $Project = "C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator"
+
+    if (-not (Test-Path $Project)) {
+        Write-Host "PROJECT NOT FOUND: $Project" -ForegroundColor Red
+        return
+    }
+
+    Set-Location $Project
+
+    $Report = Join-Path $Project "PHASE4_DIAGNOSTIC_REPORT.txt"
+
+    Start-Transcript -Path $Report -Force | Out-Null
+
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host " NUNES SMART LIVE VOICE TRANSLATOR" -ForegroundColor Cyan
+    Write-Host " PHASE 4 COMPLETE DIAGNOSTICS" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    Write-Host "`n[1] PROJECT STATUS" -ForegroundColor Yellow
+    git status --short
+    git branch --show-current
+
+    Write-Host "`n[2] MODIFIED FILES" -ForegroundColor Yellow
+    git diff --stat
+    git ls-files --others --exclude-standard
+
+    Write-Host "`n[3] PHASE REPORTS" -ForegroundColor Yellow
+    Get-ChildItem -Filter "PHASE*_REPORT.md" |
+        Select-Object Name, Length
+
+    Write-Host "`n[4] DASHBOARD FILES" -ForegroundColor Yellow
+    if (Test-Path "apps/dashboard") {
+        Get-ChildItem "apps/dashboard/app" -Recurse -File |
+            Select-Object -ExpandProperty FullName
+    }
+
+    Write-Host "`n[5] DATABASE AND MIGRATIONS" -ForegroundColor Yellow
+    Get-ChildItem -Recurse -File -Include "*.sql","*migration*","*database*" |
+        Where-Object {
+            $_.FullName -notmatch "node_modules|\.next|\.git"
+        } |
+        Select-Object -ExpandProperty FullName
+
+    Write-Host "`n[6] TYPESCRIPT CHECK" -ForegroundColor Yellow
+    npm.cmd run typecheck --workspaces --if-present
+    $TypeScriptExit = $LASTEXITCODE
+
+    Write-Host "`n[7] COMPLETE TEST SUITE" -ForegroundColor Yellow
+    npm.cmd test --workspaces --if-present
+    $TestExit = $LASTEXITCODE
+
+    Write-Host "`n[8] SAFETY CONFIGURATION" -ForegroundColor Yellow
+
+    $Files = Get-ChildItem "apps/realtime-server/src" -Recurse -File -Include "*.ts"
+
+    $Files |
+        Select-String -Pattern "audioIsolationVerified|allowLiveTranslation|NUNES_INDEPENDENT_CALLS_ENABLED" |
+        Select-Object -First 35 Path, LineNumber, Line
+
+    Write-Host "`n[9] FINAL RESULTS" -ForegroundColor Cyan
+
+    if ($TypeScriptExit -eq 0) {
+        Write-Host "TYPESCRIPT: PASS" -ForegroundColor Green
+    } else {
+        Write-Host "TYPESCRIPT: FAIL" -ForegroundColor Red
+    }
+
+    if ($TestExit -eq 0) {
+        Write-Host "TESTS: PASS" -ForegroundColor Green
+    } else {
+        Write-Host "TESTS: FAIL" -ForegroundColor Red
+    }
+
+    Write-Host "REAL CALLS: NOT STARTED"
+    Write-Host "LIVE TRANSLATION: NOT ACTIVATED"
+    Write-Host "DEPLOYMENT: NOT PERFORMED"
+    Write-Host "GIT PUSH: NOT PERFORMED"
+
+    Stop-Transcript | Out-Null
+
+    Write-Host "`n========================================" -ForegroundColor Green
+    Write-Host "DIAGNOSTIC REPORT CREATED" -ForegroundColor Green
+    Write-Host $Report
+    Write-Host "========================================" -ForegroundColor Green
+}
+**********************
+Windows PowerShell transcript end
+End time: 20261009155037
+**********************

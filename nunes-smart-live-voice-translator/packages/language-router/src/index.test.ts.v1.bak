@@ -1,0 +1,1 @@
+import{describe,it,expect}from'vitest';import{decideMode}from'./index';describe('SmartLanguageRouter',()=>{it('Tamil+Tamil bypasses',()=>expect(decideMode('ta','ta',.96)).toBe('DIRECT_BYPASS'));it('Tamil+Hindi translates',()=>expect(decideMode('ta','hi',.94)).toBe('TRANSLATION_ACTIVE'));it('low confidence waits',()=>expect(decideMode('ta','hi',.5)).toBe('TEMPORARY_UNCERTAIN'))});

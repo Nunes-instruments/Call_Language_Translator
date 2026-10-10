@@ -1,0 +1,278 @@
+﻿import {
+  describe,
+  expect,
+  it
+} from "vitest";
+
+import {
+  decideMode,
+  SmartLanguageRouter
+} from "./index";
+
+describe("SmartLanguageRouter", () => {
+  it("Tamil+Tamil bypasses", () => {
+    expect(
+      decideMode("ta", "ta", 0.96)
+    ).toBe("DIRECT_BYPASS");
+  });
+
+  it("Tamil+Hindi translates", () => {
+    expect(
+      decideMode("ta", "hi", 0.94)
+    ).toBe("TRANSLATION_ACTIVE");
+  });
+
+  it("low single confidence waits", () => {
+    expect(
+      decideMode("ta", "hi", 0.50)
+    ).toBe("TEMPORARY_UNCERTAIN");
+  });
+
+  it("two consistent Hindi finals activate translation", () => {
+    const router =
+      new SmartLanguageRouter("ta");
+
+    const first =
+      router.observe("hi", 0.79);
+
+    expect(first.mode).toBe(
+      "TEMPORARY_UNCERTAIN"
+    );
+
+    const second =
+      router.observe("hi", 0.80);
+
+    expect(second.mode).toBe(
+      "TRANSLATION_ACTIVE"
+    );
+
+    expect(second.stableLanguage).toBe(
+      "hi"
+    );
+
+    expect(second.consecutiveCount).toBe(2);
+  });
+
+  it("strong Hindi detection activates immediately", () => {
+    const router =
+      new SmartLanguageRouter("ta");
+
+    const result =
+      router.observe("hi", 0.95);
+
+    expect(result.mode).toBe(
+      "TRANSLATION_ACTIVE"
+    );
+  });
+
+  it("two consistent Tamil finals activate direct bypass", () => {
+    const router =
+      new SmartLanguageRouter("ta");
+
+    router.observe("ta", 0.79);
+
+    const result =
+      router.observe("ta", 0.80);
+
+    expect(result.mode).toBe(
+      "DIRECT_BYPASS"
+    );
+
+    expect(result.stableLanguage).toBe(
+      "ta"
+    );
+  });
+
+  it("does not flip stable Hindi on one weak Tamil result", () => {
+    const router =
+      new SmartLanguageRouter("ta");
+
+    router.observe("hi", 0.95);
+
+    const result =
+      router.observe("ta", 0.55);
+
+    expect(result.mode).toBe(
+      "TRANSLATION_ACTIVE"
+    );
+
+    expect(result.stableLanguage).toBe(
+      "hi"
+    );
+  });
+
+  it("reset returns router to uncertain", () => {
+    const router =
+      new SmartLanguageRouter("ta");
+
+    router.observe("hi", 0.96);
+
+    router.reset();
+
+    expect(router.getMode()).toBe(
+      "TEMPORARY_UNCERTAIN"
+    );
+
+    expect(
+      router.getStableLanguage()
+    ).toBe("unknown");
+  });
+});
+
+import {
+  detectMixedLanguage
+} from "./index";
+
+describe("Mixed Language Router V3", () => {
+
+  it("detects Tanglish with English technical terms", () => {
+    const result =
+      detectMixedLanguage(
+        "Enaku Fluke pressure calibrator venum price sollunga",
+        "en-IN",
+        0.90
+      );
+
+    expect(result.language).toBe("ta");
+  });
+
+  it("detects Hinglish even when provider says en-IN", () => {
+    const result =
+      detectMixedLanguage(
+        "Mujhe Fluke pressure calibrator chahiye price bataiye",
+        "en-IN",
+        0.65
+      );
+
+    expect(result.language).toBe("hi");
+  });
+
+  it("detects Hindi script immediately", () => {
+    const result =
+      detectMixedLanguage(
+        "मुझे प्रेशर कैलिब्रेटर चाहिए",
+        "hi-IN",
+        0.90
+      );
+
+    expect(result.language).toBe("hi");
+  });
+
+  it("detects Tamil script immediately", () => {
+    const result =
+      detectMixedLanguage(
+        "எனக்கு பிரஷர் காலிப்ரேட்டர் வேண்டும்",
+        "ta-IN",
+        0.90
+      );
+
+    expect(result.language).toBe("ta");
+  });
+
+  it("technical English alone stays unknown", () => {
+    const result =
+      detectMixedLanguage(
+        "Fluke DPI 620G pressure calibrator GST delivery",
+        "en-IN",
+        0.95
+      );
+
+    expect(result.language).toBe(
+      "unknown"
+    );
+  });
+
+  it("detects real failed call Hinglish as Hindi", () => {
+    const result =
+      detectMixedLanguage(
+        "GPay truck DP 1620G by chahiye",
+        "en-IN",
+        0.65
+      );
+
+    expect(result.language).toBe("hi");
+  });
+
+  it("detects Hindi delivery request", () => {
+    const result =
+      detectMixedLanguage(
+        "delivery jaldi chahiye price thoda zyada hai",
+        "en-IN",
+        0.69
+      );
+
+    expect(result.language).toBe("hi");
+  });
+
+  it("detects Tanglish business request", () => {
+    const result =
+      detectMixedLanguage(
+        "price konjam adhigama irukku delivery seekiram venum",
+        "en-IN",
+        0.75
+      );
+
+    expect(result.language).toBe("ta");
+  });
+
+});
+
+describe("Mixed Language Router V4 real-call regression", () => {
+
+  it("detects Saaras Hindi phonetics written in Tamil script", () => {
+    const result = detectMixedLanguage(
+      "GE Fluke pressure calibrator சஹா ஹை price-ஓட எடா ஹை delivery ஜலதி ஜஹி.",
+      "ta-IN",
+      0.49
+    );
+
+    expect(result.language).toBe("hi");
+    expect(result.hindiScore).toBeGreaterThan(
+      result.tamilScore
+    );
+  });
+
+  it("keeps real Tamil Tanglish as Tamil", () => {
+    const result = detectMixedLanguage(
+      "எனக்கு Fluke pressure calibrator வேணும். price and delivery time சொல்லுங்க.",
+      "ta-IN",
+      1
+    );
+
+    expect(result.language).toBe("ta");
+    expect(result.tamilScore).toBeGreaterThan(
+      result.hindiScore
+    );
+  });
+
+  it("keeps technical English only unknown", () => {
+    const result = detectMixedLanguage(
+      "GE Druck DPI 620G pressure calibrator",
+      "en-IN",
+      0.99
+    );
+
+    expect(result.language).toBe("unknown");
+  });
+
+  it("detects normal Hinglish as Hindi", () => {
+    const result = detectMixedLanguage(
+      "Mujhe Fluke pressure calibrator chahiye price thoda zyada hai delivery jaldi chahiye",
+      "en-IN",
+      0.90
+    );
+
+    expect(result.language).toBe("hi");
+  });
+
+  it("detects normal Tanglish as Tamil", () => {
+    const result = detectMixedLanguage(
+      "Enaku Fluke pressure calibrator venum price and delivery time sollunga",
+      "en-IN",
+      0.90
+    );
+
+    expect(result.language).toBe("ta");
+  });
+
+});

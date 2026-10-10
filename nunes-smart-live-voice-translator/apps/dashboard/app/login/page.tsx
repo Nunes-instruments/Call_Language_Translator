@@ -1,0 +1,6 @@
+"use client";
+import { useState } from "react";
+export default function Login() {
+  const [error,setError] = useState(""),[pending,setPending] = useState(false);
+  return <main className="login"><section className="login-card"><div className="brand-mark">N</div><p className="eyebrow">NUNES · VOICE OPERATIONS</p><h1>Welcome back.</h1><p className="muted">Sign in to your translator workspace.</p><form onSubmit={async event => { event.preventDefault(); setPending(true); setError(""); const password = String(new FormData(event.currentTarget).get("password")); try { const response = await fetch("/api/session",{ method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ password }) }); const result = await response.json(); if (!response.ok) throw new Error(result.error); window.location.assign("/"); } catch (error) { setError(error instanceof Error ? error.message : "Sign-in unavailable"); } finally { setPending(false); } }}><label>Workspace password<input name="password" type="password" required autoComplete="current-password" maxLength={512}/></label><button disabled={pending}>{pending ? "Signing in…" : "Sign in →"}</button>{error && <p role="alert" className="error">{error.replaceAll("_"," ")}</p>}</form><p className="login-note">Access uses your existing admin or read-only workspace credentials.</p></section></main>;
+}
