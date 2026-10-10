@@ -1,9 +1,11 @@
+import { buildIndependentCallLegUrls } from "./independentCallLegUrls.js";
 export type IndependentLegRole = "customer" | "staff";
 
 export interface IndependentLegXmlInput {
   role: IndependentLegRole;
   publicBaseUrl: string;
   sessionId: string;
+  connectionToken: string;
 }
 
 function escapeXml(value: string): string {
@@ -48,18 +50,22 @@ export function buildIndependentCallLegXml(
   }
 
   const streamUrl = new URL(
-    "/plivo/stream",
+    "/plivo/independent/stream",
     base
   );
 
   streamUrl.protocol = "wss:";
   streamUrl.searchParams.set("sessionId", input.sessionId);
   streamUrl.searchParams.set("role", input.role);
+  if (!/^[A-Za-z0-9_-]{43}$/.test(input.connectionToken)) throw new Error("Invalid connection token");
+  streamUrl.searchParams.set("connectionToken", input.connectionToken);
+  const urls = buildIndependentCallLegUrls(input.publicBaseUrl, input.sessionId, input.role);
 
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     "<Response>",
-    `  <Stream bidirectional="true" keepCallAlive="true" audioTrack="inbound" contentType="audio/x-mulaw;rate=8000">${escapeXml(streamUrl.toString())}</Stream>`,
+    `  <Stream bidirectional="true" keepCallAlive="true" audioTrack="inbound" contentType="audio/x-mulaw;rate=8000" statusCallbackUrl="${escapeXml(urls.streamStatusUrl)}" statusCallbackMethod="POST">${escapeXml(streamUrl.toString())}</Stream>`,
+    "  <Hangup/>",
     "</Response>",
   ].join("\n");
 }

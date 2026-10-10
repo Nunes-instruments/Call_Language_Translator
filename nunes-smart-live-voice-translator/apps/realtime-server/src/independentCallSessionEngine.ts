@@ -166,6 +166,12 @@ export class IndependentCallSessionEngine {
     );
   }
 
+  removeClosedSession(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session?.closed) return false;
+    return this.sessions.delete(sessionId);
+  }
+
   private requireOpen(
     sessionId: string
   ): IndependentCallSession {

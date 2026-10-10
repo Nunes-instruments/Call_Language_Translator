@@ -1,5 +1,18 @@
 import { Client } from "plivo";
 
+let liveCallsApproved: boolean = process.env.NUNES_INDEPENDENT_LIVE_CALLS_APPROVED === "true";
+
+export function setIndependentLiveCallsApproved(approved: boolean) {
+  liveCallsApproved = approved;
+}
+
+export function isIndependentLiveCallsApproved(): boolean {
+  return liveCallsApproved;
+}
+
+// Reversible operator approval sentinel
+export const INDEPENDENT_LIVE_CALLS_APPROVED = false as const;
+
 export interface IndependentPlivoCallInput {
   authId: string;
   authToken: string;
@@ -26,6 +39,7 @@ export interface IndependentPlivoCallResult {
 export async function createIndependentPlivoCall(
   input: IndependentPlivoCallInput
 ): Promise<IndependentPlivoCallResult> {
+  if (!INDEPENDENT_LIVE_CALLS_APPROVED && !liveCallsApproved) throw new Error("LIVE_CALL_APPROVAL_REQUIRED");
   if (
     !input.authId.trim() ||
     !input.authToken.trim() ||
@@ -70,6 +84,8 @@ export async function createIndependentPlivoCall(
     input.answerUrl,
     {
       answerMethod: "POST",
+      ringTimeout: 120,
+      timeLimit: 1800,
       ...(input.hangupUrl
         ? {
             hangupUrl: input.hangupUrl,

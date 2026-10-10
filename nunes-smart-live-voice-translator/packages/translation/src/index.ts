@@ -1,4 +1,4 @@
-﻿export type ProtectedEntity = {
+export type ProtectedEntity = {
   token: string;
   original: string;
 };
@@ -25,12 +25,14 @@ const BUSINESS_TERMS = [
 
 const TECHNICAL_PATTERNS: RegExp[] = [
   /₹\s?[\d,]+(?:\.\d+)?/gi,
+  /(?:[$€£]|\b(?:USD|EUR|INR|Rs\.?))\s?[\d,]+(?:\.\d+)?/gi,
   /\b\d+(?:\.\d+)?\s?%/gi,
   /\b\d+(?:\.\d+)?\s?-\s?\d+(?:\.\d+)?\s?mA\b/gi,
   /\b\d+(?:\.\d+)?\s?(?:mA|A|V|mV|kV|Hz|kHz|MHz|bar|psi|Pa|kPa|MPa|°C|mm|cm|m|ml|L|LPH|sccm|Nm)\b/gi,
 
   // Model / part-number style identifiers.
-  /\b(?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*\d)[A-Z0-9]+(?:[-/][A-Z0-9]+)*\b/g
+  /\b(?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*\d)[A-Z0-9]+(?:[-/][A-Z0-9]+)*\b/g,
+  /\b\d[\d,]*(?:\.\d+)?\b/g
 ];
 
 function rangesOverlap(
@@ -41,15 +43,19 @@ function rangesOverlap(
   return ranges.some(range => start < range.end && end > range.start);
 }
 
-export function protectEntities(input: string): ProtectedText {
+export function protectEntities(input: string, customTerms?: string[]): ProtectedText {
   const matches: Array<{
     start: number;
     end: number;
     value: string;
   }> = [];
 
-  // Protect known business terminology first.
-  const sortedTerms = [...BUSINESS_TERMS].sort(
+  // Protect known business and custom technical terminology first.
+  const allTerms = customTerms && customTerms.length
+    ? [...new Set([...BUSINESS_TERMS, ...customTerms])]
+    : BUSINESS_TERMS;
+
+  const sortedTerms = [...allTerms].sort(
     (a, b) => b.length - a.length
   );
 
@@ -143,7 +149,7 @@ export function restoreEntities(
     );
 
     output = output.replace(
-      new RegExp(escaped, "gi"),
+      new RegExp(`${escaped}(?!\\d)`, "gi"),
       entity.original
     );
   }

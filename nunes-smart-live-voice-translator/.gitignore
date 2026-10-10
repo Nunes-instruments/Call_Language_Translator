@@ -23,3 +23,6 @@ coverage/
 *.log
 
 apps/realtime-server/src/index.before-*.ts
+.pilot-authorizations*.json
+
+backup-before-fix-*/

@@ -1,0 +1,50 @@
+{
+  "phase": "Phase 5 Offline Translation Pipeline Latency & Deterministic Benchmarking",
+  "kind": "offline-immediate-scripted-mocks",
+  "iterations": 100,
+  "inputAudioMs": 200,
+  "segmentationSilenceMs": 300,
+  "bidirectionalRatio": "50% customer (hi->ta), 50% staff (ta->hi)",
+  "excludes": [
+    "public network transit",
+    "billable Sarvam cloud inference",
+    "real Plivo telephony SIP signaling",
+    "physical microphone capture",
+    "speaker hardware playback"
+  ],
+  "stats": {
+    "stt": {
+      "medianMs": 0.028799999999989723,
+      "p95Ms": 0.1366000000000156,
+      "maxMs": 0.5694000000000017
+    },
+    "translation": {
+      "medianMs": 0.026900000000011914,
+      "p95Ms": 0.07280000000000086,
+      "maxMs": 0.16330000000002087
+    },
+    "tts": {
+      "medianMs": 0.024699999999995725,
+      "p95Ms": 0.0660000000000025,
+      "maxMs": 0.13190000000000168
+    },
+    "total": {
+      "medianMs": 0.15979999999998995,
+      "p95Ms": 0.5846000000000231,
+      "maxMs": 4.241600000000005
+    },
+    "cancellationMs": 0.1600999999999999
+  },
+  "backpressure": {
+    "maxPendingConcurrentUtterances": 4,
+    "maxPreparedAudioBytes": 128000,
+    "queueOverflowProtected": true
+  },
+  "providerCalls": {
+    "realPlivo": 0,
+    "realSarvam": 0
+  },
+  "actualAudioIsolationVerified": false,
+  "productionTranslationAuthorized": false,
+  "timestamp": "2026-10-10T04:37:47.603Z"
+}

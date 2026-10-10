@@ -1,0 +1,40 @@
+{
+  "kind": "offline-immediate-scripted-mocks",
+  "iterations": 100,
+  "inputAudioMs": 200,
+  "segmentationSilenceMs": 300,
+  "excludes": [
+    "network",
+    "provider inference",
+    "telephony",
+    "speech capture",
+    "playback"
+  ],
+  "stats": {
+    "stt": {
+      "medianMs": 0.03679999999997108,
+      "p95Ms": 0.13930000000004839,
+      "maxMs": 0.7076999999999884
+    },
+    "translation": {
+      "medianMs": 0.03049999999996089,
+      "p95Ms": 0.1017999999999688,
+      "maxMs": 0.2208999999999719
+    },
+    "tts": {
+      "medianMs": 0.030200000000036198,
+      "p95Ms": 0.0905999999999949,
+      "maxMs": 0.21109999999998763
+    },
+    "total": {
+      "medianMs": 0.16380000000003747,
+      "p95Ms": 0.5675999999999704,
+      "maxMs": 3.9610000000000127
+    }
+  },
+  "providerCalls": {
+    "realPlivo": 0,
+    "realSarvam": 0
+  },
+  "actualAudioIsolationVerified": false
+}

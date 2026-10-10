@@ -1,0 +1,3812 @@
+NUNES SMART LIVE VOICE TRANSLATOR
+PHASE 5 SOURCE INSPECTION
+Generated: 2026-10-10T09:50:32.1629996+05:30
+
+===== GIT STATUS =====
+ M .env.example
+ M apps/dashboard/app/globals.css
+ M apps/dashboard/app/page.tsx
+ M apps/dashboard/tsconfig.json
+ M apps/dashboard/tsconfig.tsbuildinfo
+ M apps/realtime-server/package.json
+ M apps/realtime-server/src/independentCallLegXml.ts
+ M apps/realtime-server/src/independentCallSessionEngine.ts
+ M apps/realtime-server/src/independentPlivoCallCreator.ts
+ M apps/realtime-server/src/index.ts
+ M package-lock.json
+ M packages/translation/src/index.ts
+?? "../NUNESoDownloadsNUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1nunes-smart-live-voice-translator\357\200\242"
+?? "../ersNUNESDownloadsNUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1nunes-smart-live-voice-translator\357\200\242"
+?? PHASE1_REPORT.md
+?? PHASE2_REPORT.md
+?? PHASE3_OFFLINE_LATENCY.json
+?? PHASE3_REPORT.md
+?? PHASE4_DIAGNOSTIC_REPORT.txt
+?? PHASE4_REPORT.md
+?? apps/dashboard/app/[module]/
+?? apps/dashboard/app/api/management/
+?? apps/dashboard/app/api/session/
+?? apps/dashboard/app/login/
+?? apps/dashboard/components/
+?? apps/dashboard/lib/
+?? apps/realtime-server/src/independentCallFeature.ts
+?? apps/realtime-server/src/independentCallIntegration.test.ts
+?? apps/realtime-server/src/independentCallLegUrls.ts
+?? apps/realtime-server/src/independentCallOrchestrator.ts
+?? apps/realtime-server/src/independentCallProvider.ts
+?? apps/realtime-server/src/independentCallRoutes.ts
+?? apps/realtime-server/src/independentCallbackReplay.test.ts
+?? apps/realtime-server/src/independentCallbackReplay.ts
+?? apps/realtime-server/src/independentLiveCallManager.ts
+?? apps/realtime-server/src/independentTranslationPipeline.ts
+?? apps/realtime-server/src/managementRoutes.ts
+?? apps/realtime-server/src/phase3Pipeline.test.ts
+?? apps/realtime-server/src/phase4Management.test.ts
+?? apps/realtime-server/src/plivoCallbackRequest.ts
+?? apps/realtime-server/src/plivoCallbackSecurity.test.ts
+?? apps/realtime-server/src/plivoWebhookRequestGuard.ts
+?? apps/realtime-server/src/sarvamPipelineAdapters.ts
+?? apps/realtime-server/src/signedIndependentCallCallbacks.ts
+?? apps/realtime-server/src/telephonyAudioCodec.ts
+?? apps/realtime-server/src/testSupport/
+?? packages/database/migrations/
+?? packages/database/src/managementStore.ts
+?? packages/database/src/postgresConnection.ts
+?? packages/database/src/versionedMigrate.ts
+?? scripts/
+?? "../t --workspaces --if-present"
+
+
+===== FILE: package.json =====
+{
+  "name": "nunes-smart-live-voice-translator",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n dashboard,realtime \"npm run dev -w @nunes/dashboard\" \"npm run dev -w @nunes/realtime-server\"",
+    "build": "npm run build -ws --if-present",
+    "typecheck": "npm run typecheck -ws --if-present",
+    "test": "npm run test -ws --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.3",
+    "postgres": "^3.4.9"
+  }
+}
+
+
+===== FILE: apps/realtime-server/package.json =====
+{
+  "name": "@nunes/realtime-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@fastify/formbody": "^9.0.0",
+    "@fastify/websocket": "^11.0.1",
+    "@google-cloud/speech": "^8.1.1",
+    "@nunes/language-router": "file:../../packages/language-router",
+    "@nunes/translation": "file:../../packages/translation",
+    "dotenv": "^18.0.6",
+    "fastify": "^5.2.1",
+    "plivo": "^4.79.0",
+    "postgres": "^3.4.9",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}
+
+
+===== FILE: apps/realtime-server/src/index.ts =====
+import { registerIndependentCallFeature } from "./independentCallFeature.js";
+import { ManagementStore } from "../../../packages/database/src/managementStore.js";
+import { postgresConnection } from "../../../packages/database/src/postgresConnection.js";
+import { registerManagementRoutes } from "./managementRoutes.js";
+import { externalCallbackUrl, signedRequestParams, guardLegacyStreamUpgrade, createLegacyStreamStartGuard } from "./plivoCallbackRequest.js";
+import { getTranslationTestMode } from "./translationTestMode.js";
+import { IndependentLiveCallManager } from "./independentLiveCallManager.js";
+import { guardPlivoWebhookRequest } from "./plivoWebhookRequestGuard.js";
+import Fastify from "fastify";
+import { SmartLanguageRouter, detectMixedLanguage } from "@nunes/language-router";
+import {
+  protectEntities,
+  restoreEntities,
+  verifyEntityIntegrity
+} from "@nunes/translation";
+import websocket from "@fastify/websocket";
+import formbody from "@fastify/formbody";
+import postgres from "postgres";
+import dotenv from "dotenv";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
+import WebSocket from "ws";
+import speech from "@google-cloud/speech";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({
+  path: path.resolve(__dirname, "../../../.env"),
+});
+
+const PORT = Number(process.env.PORT || 8787);
+
+const sarvamApiKey = process.env.SARVAM_API_KEY;
+
+if (!sarvamApiKey) {
+  throw new Error("SARVAM_API_KEY is missing from root .env");
+}
+
+const SARVAM_API_KEY: string = sarvamApiKey;
+
+async function translateHindiToTamilSafe(input: string) {
+  const protectedResult = protectEntities(input);
+
+  const startedAt = performance.now();
+
+  const response = await fetch(
+    "https://api.sarvam.ai/translate",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-subscription-key": SARVAM_API_KEY
+      },
+      body: JSON.stringify({
+        input: protectedResult.text,
+        source_language_code: "hi-IN",
+        target_language_code: "ta-IN",
+        model: "sarvam-translate:v1"
+      })
+    }
+  );
+
+  const latencyMs =
+    Math.round(performance.now() - startedAt);
+
+  const body = await response.text();
+
+  if (!response.ok) {
+    throw new Error(
+      `Sarvam translation HTTP ${response.status}: ${body}`
+    );
+  }
+
+  const result = JSON.parse(body) as {
+    translated_text?: unknown;
+  };
+
+  if (typeof result.translated_text !== "string") {
+    throw new Error(
+      "Sarvam response missing translated_text"
+    );
+  }
+
+  const restoredText = restoreEntities(
+    result.translated_text,
+    protectedResult.entities
+  );
+
+  let finalText = restoredText;
+
+  let integrity = verifyEntityIntegrity(
+    finalText,
+    protectedResult.entities
+  );
+
+  let entityRepairApplied = false;
+
+  if (!integrity.valid) {
+    const missingEntities = [...new Set(integrity.missing)];
+
+    console.warn("");
+    console.warn("==========================================");
+    console.warn(" NUNES ENTITY AUTO-REPAIR");
+    console.warn("==========================================");
+    console.warn(`MISSING : ${missingEntities.join(" | ")}`);
+    console.warn("ACTION  : RESTORE MISSING PROTECTED ENTITIES");
+
+    for (const missingEntity of missingEntities) {
+      if (!finalText.includes(missingEntity)) {
+        finalText = `${finalText.trim()} ${missingEntity}`.trim();
+      }
+    }
+
+    integrity = verifyEntityIntegrity(
+      finalText,
+      protectedResult.entities
+    );
+
+    entityRepairApplied = true;
+
+    console.warn(
+      `RESULT  : ${integrity.valid ? "REPAIRED" : "FAILED"}`
+    );
+    console.warn("==========================================");
+    console.warn("");
+  }
+
+  if (!integrity.valid) {
+    throw new Error(
+      `Entity integrity repair failed: ${integrity.missing.join(", ")}`
+    );
+  }
+
+  return {
+    text: finalText,
+    latencyMs,
+    entityRepairApplied,
+    entities:
+      protectedResult.entities.map(
+        entity => entity.original
+      )
+  };
+}
+
+const PUBLIC_BASE_URL =
+  process.env.PUBLIC_BASE_URL ||
+  "https://remote-material-staple.ngrok-free.dev";
+
+const databaseUrl = process.env.DATABASE_URL;
+
+if (!databaseUrl) {
+  throw new Error("DATABASE_URL is missing from root .env");
+}
+
+const sql = postgres(databaseUrl, {
+  ssl: "require",
+  max: 5,
+});
+
+const app = Fastify({
+  logger: true,
+  trustProxy: true,
+});
+
+await app.register(formbody);
+await app.register(websocket);
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function maskPhone(phone?: string): string | null {
+  if (!phone) return null;
+
+  const clean = phone.trim();
+
+  if (clean.length <= 4) {
+    return "****";
+  }
+
+  return `${"*".repeat(Math.max(4, clean.length - 4))}${clean.slice(-4)}`;
+}
+
+function makeInternalCallId(providerCallId?: string): string {
+  if (providerCallId) {
+    return `plivo-${providerCallId}`;
+  }
+
+  return `plivo-${crypto.randomUUID()}`;
+}
+
+// ============================================================
+// HEALTH
+// ============================================================
+
+app.get("/health", async () => {
+  let database = "UNKNOWN";
+
+  try {
+    await sql`SELECT 1`;
+    database = "CONNECTED";
+  } catch {
+    database = "DISCONNECTED";
+  }
+
+  return {
+    service: "realtime-server",
+    status: database === "CONNECTED" ? "HEALTHY" : "DEGRADED",
+    database,
+    timestamp: new Date().toISOString(),
+  };
+});
+
+// ============================================================
+// PLIVO INBOUND WEBHOOK
+// ============================================================
+
+const independentLiveCallManager = new IndependentLiveCallManager();
+const managementStore = process.env.NUNES_MANAGEMENT_ENABLED === "true" ? new ManagementStore(postgresConnection(sql)) : undefined;
+if (managementStore) { await managementStore.health(); await managementStore.recover(); await registerManagementRoutes(app,{ store:managementStore,env:process.env }); }
+await registerIndependentCallFeature(app, { env: process.env, manager: independentLiveCallManager, store:managementStore });
+if (process.env.NUNES_INDEPENDENT_CALLS_ENABLED === "true") app.get(
+  "/internal/independent-call-session/:sessionId",
+  async (request, reply) => {
+    const configuredPassword = process.env.NUNES_ADMIN_PASSWORD;
+
+    if (!configuredPassword) {
+      return reply.code(503).send({ error: "Unavailable" });
+    }
+
+    const authorization = request.headers.authorization;
+
+    if (
+      typeof authorization !== "string" ||
+      !authorization.startsWith("Bearer ")
+    ) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+
+    const providedPassword = authorization.slice(7);
+
+    const expected = Buffer.from(configuredPassword, "utf8");
+    const actual = Buffer.from(providedPassword, "utf8");
+
+    const { timingSafeEqual } = await import("node:crypto");
+
+    if (
+      actual.length !== expected.length ||
+      !timingSafeEqual(actual, expected)
+    ) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+
+    const { sessionId } = request.params as {
+      sessionId: string;
+    };
+
+    const record = independentLiveCallManager.get(sessionId);
+    const session = independentLiveCallManager.getSession(sessionId);
+
+    if (!record || !session) {
+      return reply.code(404).send({ error: "Session not found" });
+    }
+
+    return reply.send({
+      sessionId: record.sessionId,
+      state: record.state,
+      createdAt: record.createdAt,
+      customer: {
+        connected: session.customer.connected,
+        streamAttached: Boolean(session.customer.streamId),
+      },
+      staff: {
+        connected: session.staff.connected,
+        streamAttached: Boolean(session.staff.streamId),
+      },
+      translationEnabled: false,
+      closed: session.closed,
+    });
+  }
+);
+app.all("/plivo/inbound", async (request, reply) => {
+  const authToken = process.env.PLIVO_AUTH_TOKEN?.trim();
+
+  const baseUrl = process.env.PUBLIC_BASE_URL?.trim();
+
+  if (!authToken || !baseUrl) {
+    request.log.error("Plivo webhook security configuration missing");
+    return reply.code(503).send("Webhook unavailable");
+  }
+
+  let callbackUrl: string;
+  let params: Record<string, string>;
+  try {
+    callbackUrl = externalCallbackUrl(baseUrl, request.url, "/plivo/inbound");
+    params = signedRequestParams(request);
+  } catch {
+    return reply.code(403).send("Forbidden");
+  }
+
+  const result = guardPlivoWebhookRequest({
+    method: request.method,
+    callbackUrl,
+    headers: request.headers,
+    params: request.method === "GET" ? {} : params,
+    authToken,
+  });
+
+  if (!result.allowed) {
+    request.log.warn(
+      { reason: result.reason },
+      "Plivo webhook rejected"
+    );
+
+    return reply.code(403).send("Forbidden");
+  }
+
+  try {
+    const body =
+      request.body && typeof request.body === "object"
+        ? (request.body as Record<string, unknown>)
+        : {};
+
+    const query =
+      request.query && typeof request.query === "object"
+        ? (request.query as Record<string, unknown>)
+        : {};
+
+    const getValue = (key: string): string | undefined => {
+      const signedValue = params[key];
+
+      if (typeof signedValue === "string" && signedValue.trim()) {
+        return signedValue.trim();
+      }
+
+      return undefined;
+    };
+
+    const providerCallId =
+      getValue("CallUUID") ||
+      getValue("RequestUUID");
+
+    const from =
+      getValue("From") ||
+      getValue("FromNumber");
+
+    const to =
+      getValue("To") ||
+      getValue("ToNumber");
+
+    const internalCallId = makeInternalCallId(providerCallId);
+
+    // Sebastian / default Tamil staff
+    const employees = await sql`
+      SELECT id
+      FROM employees
+      WHERE employee_code = 'NUNES-001'
+        AND enabled = TRUE
+      LIMIT 1
+    `;
+
+    const employeeId = employees[0]?.id ?? null;
+
+    // Idempotent insert
+    await sql`
+      INSERT INTO call_sessions (
+        call_id,
+        provider_call_id,
+        employee_id,
+        direction,
+        staff_language,
+        customer_language,
+        mode,
+        translated,
+        customer_number_masked,
+        telephony_provider,
+        status
+      )
+      VALUES (
+        ${internalCallId},
+        ${providerCallId ?? null},
+        ${employeeId},
+        'INBOUND',
+        'ta',
+        NULL,
+        'CONNECTING',
+        FALSE,
+        ${maskPhone(from)},
+        'plivo',
+        'CONNECTING'
+      )
+      ON CONFLICT (call_id)
+      DO UPDATE SET
+        provider_call_id = EXCLUDED.provider_call_id,
+        updated_at = NOW()
+    `;
+
+    const sessions = await sql`
+      SELECT id
+      FROM call_sessions
+      WHERE call_id = ${internalCallId}
+      LIMIT 1
+    `;
+
+    const sessionId = sessions[0]?.id;
+
+    if (sessionId) {
+      await sql`
+        INSERT INTO call_events (
+          call_session_id,
+          event_type,
+          direction,
+          provider,
+          metadata
+        )
+        VALUES (
+          ${sessionId},
+          'PLIVO_INBOUND_WEBHOOK',
+          'INBOUND',
+          'plivo',
+          ${sql.json({
+            destinationPresent: Boolean(to),
+            callerMasked: maskPhone(from),
+          })}
+        )
+      `;
+    }
+
+    /*
+      IMPORTANT:
+      This step intentionally does NOT start AI translation yet.
+
+      First we prove:
+
+      Plivo
+        -> webhook
+        -> realtime server
+        -> Neon session
+
+      Next step adds bidirectional media streaming.
+    */
+
+    const staffPhoneNumber =
+      process.env.STAFF_PHONE_NUMBER?.trim();
+
+    const plivoNumber =
+      process.env.PLIVO_NUMBER?.trim();
+
+    if (!staffPhoneNumber) {
+      throw new Error("STAFF_PHONE_NUMBER is missing");
+    }
+
+    if (!plivoNumber) {
+      throw new Error("PLIVO_NUMBER is missing");
+    }
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial callerId="${escapeXml(plivoNumber)}"
+        callbackUrl="${escapeXml(`${PUBLIC_BASE_URL}/plivo/dial-status`)}"
+        callbackMethod="POST">
+    <Number>${escapeXml(staffPhoneNumber)}</Number>
+  </Dial>
+</Response>`;
+
+    reply
+      .code(200)
+      .header("Content-Type", "application/xml; charset=utf-8")
+      .send(xml);
+
+  } catch (error) {
+    request.log.error(error);
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Speak language="en-US">Temporary system error.</Speak>
+</Response>`;
+
+    reply
+      .code(200)
+      .header("Content-Type", "application/xml; charset=utf-8")
+      .send(xml);
+  }
+});
+
+// ============================================================
+// PLIVO DIAL DIAGNOSTICS
+// ============================================================
+
+app.all("/plivo/dial-status", async (request, reply) => {
+  const callbackAuthToken = process.env.PLIVO_AUTH_TOKEN?.trim();
+  const callbackBaseUrl = process.env.PUBLIC_BASE_URL?.trim();
+
+  if (!callbackAuthToken || !callbackBaseUrl) {
+    return reply.code(503).send("Webhook unavailable");
+  }
+
+  let callbackUrl: string;
+  let callbackParams: Record<string, string>;
+  try {
+    callbackUrl = externalCallbackUrl(callbackBaseUrl, request.url, "/plivo/dial-status");
+    callbackParams = signedRequestParams(request);
+  } catch {
+    return reply.code(403).send("Forbidden");
+  }
+
+  const callbackGuard = guardPlivoWebhookRequest({
+    method: request.method,
+    callbackUrl,
+    headers: request.headers,
+    params: request.method === "GET" ? {} : callbackParams,
+    authToken: callbackAuthToken,
+  });
+
+  if (!callbackGuard.allowed) {
+    request.log.warn(
+      { reason: callbackGuard.reason },
+      "Plivo callback rejected"
+    );
+    return reply.code(403).send("Forbidden");
+  }
+
+  const body =
+    callbackParams;
+
+  const getText = (key: string) =>
+    typeof body[key] === "string"
+      ? (body[key] as string)
+      : "unknown";
+
+  const maskPhone = (value: string) => {
+    if (!value || value === "unknown") return "unknown";
+    if (value.length <= 4) return "****";
+    return `${"*".repeat(Math.max(0, value.length - 4))}${value.slice(-4)}`;
+  };
+
+  console.log("");
+  console.log("==========================================");
+  console.log(" NUNES PLIVO DIAL DIAGNOSTICS");
+  console.log("==========================================");
+  console.log("DIAL ACTION     :", getText("DialAction"));
+  console.log("DIAL STATUS     :", getText("DialStatus"));
+  console.log("A-LEG UUID      :", getText("DialALegUUID"));
+  console.log("B-LEG UUID      :", getText("DialBLegUUID"));
+  console.log("B-LEG STATUS    :", getText("DialBLegStatus"));
+  console.log("HANGUP CAUSE    :", getText("HangupCause"));
+  console.log("HANGUP CODE     :", getText("HangupCauseCode"));
+  console.log("DIRECTION       :", getText("Direction"));
+  console.log("FROM            :", maskPhone(getText("From")));
+  console.log("TO              :", maskPhone(getText("To")));
+  console.log("DURATION        :", getText("Duration"));
+  console.log("BILL DURATION   :", getText("BillDuration"));
+  console.log("==========================================");
+  console.log("");
+
+  reply.code(200).send({
+    ok: true,
+  });
+});
+// ============================================================
+// PLIVO AUDIO STREAM
+// ============================================================
+
+app.get(
+  "/plivo/stream",
+  { websocket: true, preValidation: async (request, reply) => {
+    if (!guardLegacyStreamUpgrade(request, process.env.PUBLIC_BASE_URL ?? "", process.env.PLIVO_AUTH_TOKEN)) {
+      return reply.code(403).send("Forbidden");
+    }
+  } },
+  (socket, request) => {
+    request.log.info("PLIVO WEBSOCKET CONNECTED");
+
+    const acceptStreamStart = createLegacyStreamStartGuard(async (providerCallId) => {
+      const knownCalls = await sql`
+        SELECT id FROM call_sessions
+        WHERE provider_call_id = ${providerCallId}
+          AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
+        LIMIT 1
+      `;
+      return Boolean(knownCalls[0]);
+    });
+    let streamId: string | null = null;
+    let callId: string | null = null;
+    let mediaFrames = 0;
+    let audioBytes = 0;
+
+    let sarvamSocket: WebSocket | null = null;
+    let sarvamReady = false;
+
+      let currentRouterMode:
+        | "DIRECT_BYPASS"
+        | "TRANSLATION_ACTIVE"
+        | "TEMPORARY_UNCERTAIN" = "TEMPORARY_UNCERTAIN";
+
+      const STAFF_LANGUAGE: "ta" | "hi" = "ta";
+
+      const smartRouter = new SmartLanguageRouter(
+        STAFF_LANGUAGE,
+        {
+          activationThreshold: 0.85,
+          holdThreshold: 0.72,
+          minimumConsecutive: 2,
+          windowSize: 4,
+          minimumAverageConfidence: 0.78
+        }
+      );
+    const pendingAudio: string[] = [];
+
+
+    let googleRecognizeStream: any = null;
+    const googleSpeechClient = new speech.SpeechClient();
+
+    const connectGoogleStt = () => {
+      console.log("");
+      console.log("==========================================");
+      console.log(" GOOGLE STT STREAM STARTING");
+      console.log("==========================================");
+
+      googleRecognizeStream = googleSpeechClient
+        .streamingRecognize({
+          config: {
+            encoding: "MULAW" as any,
+            sampleRateHertz: 8000,
+            languageCode: "hi-IN",
+            alternativeLanguageCodes: ["ta-IN", "en-IN"],
+            enableAutomaticPunctuation: true,
+            speechContexts: [
+              {
+                phrases: [
+                  "Fluke",
+                  "Fluke pressure calibrator",
+                  "GE Druck",
+                  "Druck",
+                  "DPI 620G",
+                  "GE Druck DPI 620G",
+                  "pressure calibrator",
+                  "temperature calibrator",
+                  "process calibrator",
+                  "loop calibrator",
+                  "dry block calibrator",
+                  "GST",
+                  "ASTM",
+                  "ISO",
+                  "4-20 mA",
+                  "delivery time",
+                  "quotation"
+                ],
+                boost: 20
+              }
+            ]
+          },
+          interimResults: true
+        })
+        .on("data", (data: any) => {
+          const result = data?.results?.[0];
+          const alternative = result?.alternatives?.[0];
+
+          if (
+            result?.isFinal === true &&
+            typeof alternative?.transcript === "string" &&
+            alternative.transcript.trim()
+          ) {
+            console.log("");
+            console.log("==========================================");
+            console.log(" NUNES GOOGLE STT FINAL");
+            console.log("==========================================");
+            console.log(`CALL       : ${callId ?? "unknown"}`);
+            console.log(`LANGUAGE   : ${result.languageCode ?? "unknown"}`);
+            console.log(`TEXT       : ${alternative.transcript.trim()}`);
+            console.log(`CONFIDENCE : ${alternative.confidence ?? 0}`);
+            console.log("MODE       : BENCHMARK ONLY");
+            console.log("==========================================");
+          }
+        })
+        .on("error", (error: Error) => {
+          request.log.error(
+            {
+              callId,
+              error: error.message
+            },
+            "GOOGLE REALTIME STT ERROR"
+          );
+        });
+
+      request.log.info(
+        { callId },
+        "GOOGLE REALTIME STT BENCHMARK CONNECTED"
+      );
+    };
+
+    const synthesizeTamilAndPlay = async (text: string) => {
+      if (!getTranslationTestMode(process.env).allowLiveTranslation || !text.trim()) return;
+
+      if (socket.readyState !== WebSocket.OPEN) {
+        request.log.warn(
+          { callId },
+          "PLIVO SOCKET NOT OPEN FOR TTS"
+        );
+        return;
+      }
+
+      const startedAt = Date.now();
+
+      const response = await fetch(
+        "https://api.sarvam.ai/text-to-speech",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "api-subscription-key": SARVAM_API_KEY,
+          },
+          body: JSON.stringify({
+            text: text.trim(),
+            target_language_code: "ta-IN",
+            language_code: "ta-IN",
+            speaker: "shubh",
+            model: "bulbul:v3",
+            pace: 1.0,
+            speech_sample_rate: 8000,
+            output_audio_codec: "mulaw"
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+
+        throw new Error(
+          `Sarvam TTS HTTP ${response.status}: ${errorText}`
+        );
+      }
+
+      const body = await response.json() as {
+        request_id?: string;
+        audios?: string[];
+      };
+
+      const audio = body.audios?.[0];
+
+      if (!audio) {
+        throw new Error("Sarvam TTS returned no audio");
+      }
+
+      /*
+       * Plivo bidirectional stream is already configured as:
+       * audio/x-mulaw;rate=8000
+       *
+       * Sarvam returns base64 encoded raw mu-law audio,
+       * therefore no transcoding is required.
+       */
+      socket.send(
+        JSON.stringify({
+          event: "playAudio",
+          media: {
+            contentType: "audio/x-mulaw",
+            sampleRate: 8000,
+            payload: audio,
+          },
+        })
+      );
+      if (streamId && socket.readyState === WebSocket.OPEN) {
+        socket.send(
+          JSON.stringify({
+            event: "checkpoint",
+            streamId,
+            name: "nunes-tts-complete"
+          })
+        );
+
+        console.log("PLIVO CHECKPOINT : SENT");
+      }
+
+      console.log("");
+      console.log("==========================================");
+      console.log(" NUNES TAMIL TTS -> PLIVO");
+      console.log("==========================================");
+      console.log(`CALL       : ${callId ?? "unknown"}`);
+      console.log(`STREAM     : ${streamId ?? "unknown"}`);
+      console.log(`TEXT       : ${text}`);
+      console.log(`MODEL      : bulbul:v3`);
+      console.log(`VOICE      : shubh`);
+      console.log(`FORMAT     : MULAW / 8000 Hz`);
+      console.log(`TTS LATENCY: ${Date.now() - startedAt} ms`);
+      console.log("PLAY AUDIO : SENT");
+      console.log("==========================================");
+      console.log("");
+    };
+    const connectSarvam = () => {
+      const sarvamKeyterms = encodeURIComponent(
+        JSON.stringify([
+          "Fluke",
+          "GE Druck",
+          "Druck",
+          "DPI 620G",
+          "Fluke pressure calibrator",
+          "GE Druck DPI 620G",
+          "pressure calibrator",
+          "temperature calibrator",
+          "process calibrator",
+          "loop calibrator",
+          "multifunction calibrator",
+          "dry block calibrator",
+          "pressure gauge",
+          "manometer",
+          "multimeter",
+          "oscilloscope",
+          "4-20 mA",
+          "GST",
+          "ASTM",
+          "ISO",
+          "quotation",
+          "delivery time",
+          "IndiaMART",
+          "Nunes Instrumentation"
+        ])
+      );
+      const sarvamUrl =
+        "wss://api.sarvam.ai/speech-to-text-realtime/ws" +
+        "?language_code=auto" +
+        "&model=saaras:v4" +
+        "&mode=codemix" +
+        "&keyterms=" + sarvamKeyterms +
+        "&encoding=mulaw" +
+        "&sample_rate=8000" +
+        "&stream_type=balanced" +
+        "&endpointing=vad" +
+        "&silence_duration_ms=500" +
+        "&min_speech_duration_ms=250";
+
+      sarvamSocket = new WebSocket(sarvamUrl, {
+        headers: {
+          "Api-Subscription-Key": SARVAM_API_KEY,
+        },
+      });
+
+      sarvamSocket.on("open", () => {
+        sarvamReady = true;
+
+        request.log.info(
+          { callId },
+          "SARVAM REALTIME STT CONNECTED"
+        );
+
+        while (pendingAudio.length > 0) {
+          const audio = pendingAudio.shift();
+
+          if (audio && sarvamSocket?.readyState === WebSocket.OPEN) {
+            sarvamSocket.send(
+              JSON.stringify({
+                event: "audio_input",
+                audio,
+              })
+            );
+          }
+        }
+      });
+
+      sarvamSocket.on("message", async (data) => {
+        try {
+          const result = JSON.parse(data.toString()) as Record<string, unknown>;
+
+          const transcript =
+            typeof result.transcript === "string"
+              ? result.transcript
+              : typeof result.text === "string"
+                ? result.text
+                : null;
+
+          const language =
+            typeof result.language_code === "string"
+              ? result.language_code
+              : typeof result.language === "string"
+                ? result.language
+                : "unknown";
+
+          const event =
+            typeof result.event === "string"
+              ? result.event
+              : typeof result.type === "string"
+                ? result.type
+                : "transcript";
+
+          if (
+            transcript?.trim() &&
+            (event === "transcript.final" || event.includes("final"))
+          ) {
+            console.log("");
+            console.log("========== SARVAM FINAL RAW ==========");
+            console.log(JSON.stringify(result, null, 2));
+            console.log("======================================");
+          }
+
+          if (
+            transcript?.trim() &&
+            event === "transcript.final"
+          ) {
+            const rawConfidence = result.language_confidence;
+
+            const confidence =
+              typeof rawConfidence === "number"
+                ? rawConfidence
+                : 0;
+
+
+            const mixedDetection =
+              detectMixedLanguage(
+                transcript.trim(),
+                language,
+                confidence
+              );
+
+            const normalizedLanguage =
+              mixedDetection.language;
+
+            /*
+             * Sarvam provider language is only one signal.
+             *
+             * Tanglish/Hinglish may arrive as en-IN,
+             * especially when technical English words
+             * such as Fluke, pressure calibrator,
+             * delivery, GST or model numbers are spoken.
+             */
+            let routingConfidence = confidence;
+
+            if (
+              mixedDetection.source === "native-script"
+            ) {
+              routingConfidence =
+                Math.max(
+                  routingConfidence,
+                  0.95
+                );
+            }
+
+            if (
+              mixedDetection.source === "romanized"
+            ) {
+              const lexicalScore =
+                Math.max(
+                  mixedDetection.tamilScore,
+                  mixedDetection.hindiScore
+                );
+
+              if (lexicalScore >= 2) {
+                routingConfidence =
+                  Math.max(
+                    routingConfidence,
+                    0.90
+                  );
+              } else if (lexicalScore === 1) {
+                routingConfidence =
+                  Math.max(
+                    routingConfidence,
+                    0.79
+                  );
+              }
+            }
+
+            const routerDecision =
+              smartRouter.observe(
+                normalizedLanguage,
+                routingConfidence
+              );
+
+            currentRouterMode =
+              routerDecision.mode;
+
+            if (
+              getTranslationTestMode(process.env).allowLiveTranslation &&
+              currentRouterMode === "TRANSLATION_ACTIVE" &&
+              routerDecision.stableLanguage === "hi"
+            ) {
+              try {
+                const translated =
+                  await translateHindiToTamilSafe(
+                    transcript.trim()
+                  );
+
+                console.log("");
+                console.log("==========================================");
+                console.log(" NUNES LIVE HINDI -> TAMIL");
+                console.log("==========================================");
+                console.log(`CALL      : ${callId ?? "unknown"}`);
+                console.log(`HINDI     : ${transcript.trim()}`);
+                console.log(`TAMIL     : ${translated.text}`);
+                console.log(`LATENCY   : ${translated.latencyMs} ms`);
+                console.log(
+                  `PROTECTED : ${
+                    translated.entities.length
+                      ? translated.entities.join(" | ")
+                      : "NONE"
+                  }`
+                );
+                console.log("INTEGRITY : PASS");
+
+                try {
+                  await synthesizeTamilAndPlay(
+                    translated.text
+                  );
+                } catch (ttsError) {
+                  request.log.error(
+                    {
+                      callId,
+                      error:
+                        ttsError instanceof Error
+                          ? ttsError.message
+                          : String(ttsError)
+                    },
+                    "TAMIL TTS PLAYBACK FAILED"
+                  );
+                }
+                console.log("==========================================");
+                console.log("");
+              } catch (error) {
+                request.log.error(
+                  {
+                    callId,
+                    error:
+                      error instanceof Error
+                        ? error.message
+                        : String(error)
+                  },
+                  "LIVE HINDI TO TAMIL TRANSLATION FAILED"
+                );
+              }
+            }
+
+            console.log("");
+            console.log("==========================================");
+            console.log(" NUNES SMART LANGUAGE ROUTER");
+            console.log("==========================================");
+            console.log(`CALL              : ${callId ?? "unknown"}`);
+            console.log(`STAFF LANGUAGE    : ${STAFF_LANGUAGE}`);
+            console.log(`CUSTOMER LANGUAGE : ${normalizedLanguage}`);
+            console.log(`RAW LANGUAGE      : ${language}`);
+            console.log(`PROVIDER CONFIDENCE: ${confidence}`);
+            console.log(`MIXED SOURCE       : ${mixedDetection.source}`);
+            console.log(`TAMIL SCORE        : ${mixedDetection.tamilScore}`);
+            console.log(`HINDI SCORE        : ${mixedDetection.hindiScore}`);
+            console.log(`ROUTING CONFIDENCE : ${routingConfidence}`);
+            console.log(`STABLE LANGUAGE   : ${routerDecision.stableLanguage}`);
+            console.log(`CANDIDATE LANGUAGE: ${routerDecision.candidateLanguage}`);
+            console.log(`ROLLING AVERAGE   : ${routerDecision.averageConfidence.toFixed(3)}`);
+            console.log(`CONSECUTIVE       : ${routerDecision.consecutiveCount}`);
+            console.log(`WINDOW SAMPLES    : ${routerDecision.sampleCount}`);
+            console.log(`ROUTER CHANGED    : ${routerDecision.changed}`);
+            console.log(`ROUTER MODE       : ${currentRouterMode}`);
+            console.log("==========================================");
+            console.log("");
+
+            if (callId) {
+              void sql`
+                UPDATE call_sessions
+                SET
+                  customer_language = ${routerDecision.stableLanguage},
+                  mode = ${currentRouterMode},
+                  translated = ${getTranslationTestMode(process.env).allowLiveTranslation && currentRouterMode === "TRANSLATION_ACTIVE"},
+                  updated_at = NOW()
+                WHERE provider_call_id = ${callId}
+                   OR id::text = ${callId}
+              `.catch((error) => {
+                request.log.error(
+                  error,
+                  "SMART ROUTER DATABASE UPDATE FAILED"
+                );
+              });
+
+              void sql`
+                INSERT INTO call_events (
+                  call_session_id,
+                  event_type,
+                  metadata
+                )
+                SELECT
+                  id,
+                  'LANGUAGE_ROUTER_DECISION',
+                  ${JSON.stringify({
+                    staffLanguage: STAFF_LANGUAGE,
+                    customerLanguage: normalizedLanguage,
+                    stableLanguage: routerDecision.stableLanguage,
+                    candidateLanguage: routerDecision.candidateLanguage,
+                    rawLanguage: language,
+                    confidence,
+                    routingConfidence,
+                    mixedLanguageSource: mixedDetection.source,
+                    tamilScore: mixedDetection.tamilScore,
+                    hindiScore: mixedDetection.hindiScore,
+                    rollingAverage: routerDecision.averageConfidence,
+                    consecutiveCount: routerDecision.consecutiveCount,
+                    sampleCount: routerDecision.sampleCount,
+                    changed: routerDecision.changed,
+                    mode: currentRouterMode
+                  })}::jsonb
+                FROM call_sessions
+                WHERE provider_call_id = ${callId}
+                   OR id::text = ${callId}
+                LIMIT 1
+              `.catch((error) => {
+                request.log.error(
+                  error,
+                  "SMART ROUTER EVENT INSERT FAILED"
+                );
+              });
+            }
+          }
+
+          if (transcript?.trim()) {
+            console.log("");
+            console.log("==========================================");
+            console.log(" NUNES LIVE SPEECH");
+            console.log("==========================================");
+            console.log(`CALL     : ${callId ?? "unknown"}`);
+            console.log(`LANGUAGE : ${language}`);
+            console.log(`EVENT    : ${event}`);
+            console.log(`TEXT     : ${transcript}`);
+            console.log("==========================================");
+            console.log("");
+          }
+        } catch {
+          request.log.debug(
+            { sarvamMessage: data.toString() },
+            "SARVAM MESSAGE"
+          );
+        }
+      });
+
+      sarvamSocket.on("close", (code, reason) => {
+        sarvamReady = false;
+
+        request.log.info(
+          {
+            callId,
+            code,
+            reason: reason.toString(),
+          },
+          "SARVAM REALTIME STT CLOSED"
+        );
+      });
+
+      sarvamSocket.on("error", (error) => {
+        sarvamReady = false;
+        request.log.error(error, "SARVAM REALTIME STT ERROR");
+      });
+    };
+
+    socket.on("message", async (rawMessage) => {
+      try {
+        const message = JSON.parse(rawMessage.toString()) as {
+          event?: string;
+          sequenceNumber?: number;
+          start?: {
+            callId?: string;
+            streamId?: string;
+            mediaFormat?: {
+              encoding?: string;
+              sampleRate?: number;
+              channels?: number;
+            };
+          };
+          media?: {
+            track?: string;
+            timestamp?: string;
+            chunk?: number;
+            payload?: string;
+          };
+        };
+
+        if (message.event === "start") {
+          if (!await acceptStreamStart(message.start)) {
+            socket.close(1008, "Invalid stream identity");
+            return;
+          }
+          streamId = message.start!.streamId!;
+          callId = message.start!.callId!;
+
+          connectSarvam();
+          connectGoogleStt();
+
+          request.log.info(
+            {
+              callId,
+              streamId,
+              mediaFormat: message.start?.mediaFormat,
+            },
+            "PLIVO STREAM STARTED"
+          );
+
+          if (callId) {
+            await sql`
+              UPDATE call_sessions
+              SET
+                mode = 'DETECTING_LANGUAGE',
+                status = 'DETECTING_LANGUAGE',
+                updated_at = NOW()
+              WHERE provider_call_id = ${callId}
+            `;
+
+            const sessions = await sql`
+              SELECT id
+              FROM call_sessions
+              WHERE provider_call_id = ${callId}
+              ORDER BY created_at DESC
+              LIMIT 1
+            `;
+
+            const sessionId = sessions[0]?.id;
+
+            if (sessionId) {
+              await sql`
+                INSERT INTO call_events (
+                  call_session_id,
+                  event_type,
+                  direction,
+                  provider,
+                  metadata
+                )
+                VALUES (
+                  ${sessionId},
+                  'PLIVO_STREAM_STARTED',
+                  'INBOUND',
+                  'plivo',
+                  ${sql.json({
+                    streamId,
+                    encoding:
+                      message.start?.mediaFormat?.encoding ?? null,
+                    sampleRate:
+                      message.start?.mediaFormat?.sampleRate ?? null,
+                  })}
+                )
+              `;
+            }
+          }
+
+          return;
+        }
+
+        if (message.event === "media") {
+          mediaFrames++;
+
+          const payload = message.media?.payload;
+
+          if (payload) {
+            audioBytes += Buffer.from(payload, "base64").length;
+
+            
+if (googleRecognizeStream) {
+            
+  googleRecognizeStream.write(
+            
+    Buffer.from(payload, "base64")
+            
+  );
+            
+}
+
+            if (
+              sarvamReady &&
+              sarvamSocket?.readyState === WebSocket.OPEN
+            ) {
+              sarvamSocket.send(
+                JSON.stringify({
+                  event: "audio_input",
+                  audio: payload,
+                })
+              );
+            } else if (pendingAudio.length < 250) {
+              pendingAudio.push(payload);
+            }
+          }
+
+          if (mediaFrames % 250 === 0) {
+            request.log.info(
+              {
+                callId,
+                streamId,
+                mediaFrames,
+                audioBytes,
+              },
+              "PLIVO AUDIO RECEIVING"
+            );
+          }
+
+          return;
+        }
+
+        if (message.event === "playedStream") {
+          const playbackMessage =
+            message as unknown as Record<string, unknown>;
+
+          console.log("");
+          console.log("==========================================");
+          console.log(" PLIVO PLAYBACK CONFIRMED");
+          console.log("==========================================");
+          console.log(`CALL   : ${callId ?? "unknown"}`);
+          console.log(`STREAM : ${String(playbackMessage.streamId ?? streamId ?? "unknown")}`);
+          console.log(`NAME   : ${String(playbackMessage.name ?? "unknown")}`);
+          console.log("AUDIO  : PLAYED");
+          console.log("==========================================");
+          console.log("");
+
+          return;
+        }
+        if (message.event === "stop") {
+          if (sarvamSocket) {
+            sarvamSocket.close();
+            sarvamSocket = null;
+            sarvamReady = false;
+          }
+
+          request.log.info(
+            {
+              callId,
+              streamId,
+              mediaFrames,
+              audioBytes,
+            },
+            "PLIVO STREAM STOPPED"
+          );
+        }
+      } catch (error) {
+        request.log.error(error, "PLIVO STREAM MESSAGE ERROR");
+      }
+    });
+
+    socket.on("close", () => {
+      if (sarvamSocket) {
+        sarvamSocket.close();
+        sarvamSocket = null;
+        sarvamReady = false;
+      }
+
+      request.log.info(
+        {
+          callId,
+          streamId,
+          mediaFrames,
+          audioBytes,
+        },
+        "PLIVO WEBSOCKET CLOSED"
+      );
+    });
+
+    socket.on("error", (error) => {
+      request.log.error(error, "PLIVO WEBSOCKET ERROR");
+    });
+  }
+);
+
+// ============================================================
+// PLIVO STREAM STATUS CALLBACK
+// ============================================================
+
+app.all("/plivo/stream-status", async (request, reply) => {
+  const callbackAuthToken = process.env.PLIVO_AUTH_TOKEN?.trim();
+  const callbackBaseUrl = process.env.PUBLIC_BASE_URL?.trim();
+
+  if (!callbackAuthToken || !callbackBaseUrl) {
+    return reply.code(503).send("Webhook unavailable");
+  }
+
+  let callbackUrl: string;
+  let callbackParams: Record<string, string>;
+  try {
+    callbackUrl = externalCallbackUrl(callbackBaseUrl, request.url, "/plivo/stream-status");
+    callbackParams = signedRequestParams(request);
+  } catch {
+    return reply.code(403).send("Forbidden");
+  }
+
+  const callbackGuard = guardPlivoWebhookRequest({
+    method: request.method,
+    callbackUrl,
+    headers: request.headers,
+    params: request.method === "GET" ? {} : callbackParams,
+    authToken: callbackAuthToken,
+  });
+
+  if (!callbackGuard.allowed) {
+    request.log.warn(
+      { reason: callbackGuard.reason },
+      "Plivo callback rejected"
+    );
+    return reply.code(403).send("Forbidden");
+  }
+
+  const body =
+    callbackParams;
+
+  request.log.info(
+    {
+      streamStatus: body,
+    },
+    "PLIVO STREAM STATUS"
+  );
+
+  reply.code(200).send({
+    ok: true,
+  });
+});
+// ============================================================
+// PLIVO STATUS CALLBACK
+// ============================================================
+
+app.all("/plivo/status", async (request, reply) => {
+  const callbackAuthToken = process.env.PLIVO_AUTH_TOKEN?.trim();
+  const callbackBaseUrl = process.env.PUBLIC_BASE_URL?.trim();
+
+  if (!callbackAuthToken || !callbackBaseUrl) {
+    return reply.code(503).send("Webhook unavailable");
+  }
+
+  let callbackUrl: string;
+  let callbackParams: Record<string, string>;
+  try {
+    callbackUrl = externalCallbackUrl(callbackBaseUrl, request.url, "/plivo/status");
+    callbackParams = signedRequestParams(request);
+  } catch {
+    return reply.code(403).send("Forbidden");
+  }
+
+  const callbackGuard = guardPlivoWebhookRequest({
+    method: request.method,
+    callbackUrl,
+    headers: request.headers,
+    params: request.method === "GET" ? {} : callbackParams,
+    authToken: callbackAuthToken,
+  });
+
+  if (!callbackGuard.allowed) {
+    request.log.warn(
+      { reason: callbackGuard.reason },
+      "Plivo callback rejected"
+    );
+    return reply.code(403).send("Forbidden");
+  }
+
+  try {
+    const body =
+      callbackParams;
+
+    const providerCallId =
+      typeof body.CallUUID === "string"
+        ? body.CallUUID
+        : undefined;
+
+    const callStatus =
+      typeof body.CallStatus === "string"
+        ? body.CallStatus.toUpperCase()
+        : "UNKNOWN";
+
+    if (providerCallId) {
+      const sessions = await sql`
+        SELECT id
+        FROM call_sessions
+        WHERE provider_call_id = ${providerCallId}
+        ORDER BY created_at DESC
+        LIMIT 1
+      `;
+
+      const sessionId = sessions[0]?.id;
+
+      if (sessionId) {
+        await sql`
+          INSERT INTO call_events (
+            call_session_id,
+            event_type,
+            provider,
+            metadata
+          )
+          VALUES (
+            ${sessionId},
+            'PLIVO_STATUS',
+            'plivo',
+            ${sql.json({
+              callStatus,
+            })}
+          )
+        `;
+
+        if (
+          callStatus === "COMPLETED" ||
+          callStatus === "HANGUP"
+        ) {
+          await sql`
+            UPDATE call_sessions
+            SET
+              status = 'COMPLETED',
+              mode = 'COMPLETED',
+              ended_at = NOW(),
+              duration_seconds =
+                GREATEST(
+                  0,
+                  EXTRACT(
+                    EPOCH FROM (NOW() - started_at)
+                  )::INTEGER
+                ),
+              updated_at = NOW()
+            WHERE id = ${sessionId}
+          `;
+        }
+      }
+    }
+
+    reply.code(200).send({
+      ok: true,
+    });
+
+  } catch (error) {
+    request.log.error(error);
+
+    reply.code(200).send({
+      ok: false,
+    });
+  }
+});
+
+// ============================================================
+// DEVELOPMENT TEST ROUTE
+// ============================================================
+
+app.post("/dev/test-inbound", async (_request, reply) => {
+  const fakeCallId = `DEV-${Date.now()}`;
+
+  const employees = await sql`
+    SELECT id
+    FROM employees
+    WHERE employee_code = 'NUNES-001'
+    LIMIT 1
+  `;
+
+  const employeeId = employees[0]?.id ?? null;
+
+  const result = await sql`
+    INSERT INTO call_sessions (
+      call_id,
+      provider_call_id,
+      employee_id,
+      direction,
+      staff_language,
+      customer_language,
+      mode,
+      translated,
+      customer_number_masked,
+      telephony_provider,
+      status
+    )
+    VALUES (
+      ${`dev-${fakeCallId}`},
+      ${fakeCallId},
+      ${employeeId},
+      'INBOUND',
+      'ta',
+      NULL,
+      'CONNECTING',
+      FALSE,
+      '********1234',
+      'plivo',
+      'CONNECTING'
+    )
+    RETURNING
+      id,
+      call_id,
+      staff_language,
+      mode,
+      status
+  `;
+
+  return {
+    ok: true,
+    session: result[0],
+  };
+});
+
+// ============================================================
+// DATABASE SESSION CHECK
+// ============================================================
+
+app.get("/dev/latest-call", async () => {
+  const calls = await sql`
+    SELECT
+      cs.id,
+      cs.call_id,
+      cs.provider_call_id,
+      cs.direction,
+      cs.staff_language,
+      cs.customer_language,
+      cs.mode,
+      cs.status,
+      cs.translated,
+      cs.telephony_provider,
+      cs.started_at,
+      e.name AS employee_name
+    FROM call_sessions cs
+    LEFT JOIN employees e
+      ON e.id = cs.employee_id
+    ORDER BY cs.created_at DESC
+    LIMIT 1
+  `;
+
+  return {
+    call: calls[0] ?? null,
+  };
+});
+
+// ============================================================
+// START SERVER
+// ============================================================
+
+async function start() {
+  try {
+    await sql`SELECT 1`;
+
+    console.log("");
+    console.log("==========================================");
+    console.log(" NUNES REALTIME SERVER");
+    console.log("==========================================");
+    console.log("DATABASE : CONNECTED");
+    console.log("PLIVO    : WEBHOOK READY");
+    console.log(`PORT     : ${PORT}`);
+    console.log("==========================================");
+    console.log("");
+
+    await app.listen({
+      port: PORT,
+      host: "0.0.0.0",
+    });
+
+  } catch (error) {
+    app.log.error(error);
+    process.exit(1);
+  }
+}
+
+async function shutdown() {
+  console.log("Shutting down NUNES realtime server...");
+
+  await app.close();
+  await sql.end();
+
+  process.exit(0);
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+
+start();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+===== FILE: apps/realtime-server/src/independentCallProvider.ts =====
+import { randomUUID } from "node:crypto";
+import { Client } from "plivo";
+import { createIndependentPlivoCall, INDEPENDENT_LIVE_CALLS_APPROVED, type IndependentPlivoCallResult } from "./independentPlivoCallCreator.js";
+import type { CallLegRole } from "./independentCallSessionEngine.js";
+
+export interface IndependentProviderLeg {
+  sessionId: string;
+  role: CallLegRole;
+  from: string;
+  to: string;
+  answerUrl: string;
+  hangupUrl: string;
+}
+
+export interface IndependentCallProvider {
+  readonly mode: "offline" | "live";
+  createLeg(input: IndependentProviderLeg): Promise<IndependentPlivoCallResult>;
+  stopLeg(input: { requestUuid: string; callUuid: string | null }): Promise<void>;
+}
+
+/** Explicit test adapter: no SDK clients, sockets, or HTTP requests. Bounded diagnostics. */
+export class OfflineIndependentCallProvider implements IndependentCallProvider {
+  readonly mode = "offline" as const;
+  readonly created: Array<IndependentProviderLeg & { requestUuid: string }> = [];
+  readonly stopped: Array<{ requestUuid: string; callUuid: string | null }> = [];
+  failRole?: CallLegRole;
+  failCleanup = false;
+
+  async createLeg(input: IndependentProviderLeg): Promise<IndependentPlivoCallResult> {
+    if (input.role === this.failRole) throw new Error("OFFLINE_PROVIDER_FAILURE");
+    const requestUuid = randomUUID();
+    this.created.push({ ...input, requestUuid });
+    if (this.created.length > 1000) this.created.shift();
+    return { requestUuid, message: "offline call simulated" };
+  }
+
+  async stopLeg(input: { requestUuid: string; callUuid: string | null }): Promise<void> {
+    if (this.failCleanup) throw new Error("OFFLINE_CLEANUP_FAILURE");
+    this.stopped.push({ ...input });
+    if (this.stopped.length > 1000) this.stopped.shift();
+  }
+}
+
+/** The separate production approval gate is deliberately locked for Phase 2. */
+export { INDEPENDENT_LIVE_CALLS_APPROVED };
+
+export class PlivoIndependentCallProvider implements IndependentCallProvider {
+  readonly mode = "live" as const;
+  constructor(private readonly config: { authId: string; authToken: string }) {}
+  async createLeg(input: IndependentProviderLeg): Promise<IndependentPlivoCallResult> {
+    if (!INDEPENDENT_LIVE_CALLS_APPROVED) throw new Error("LIVE_CALL_APPROVAL_REQUIRED");
+    return createIndependentPlivoCall({ ...this.config, ...input });
+  }
+  async stopLeg(input: { requestUuid: string; callUuid: string | null }): Promise<void> {
+    if (!INDEPENDENT_LIVE_CALLS_APPROVED) throw new Error("LIVE_CALL_APPROVAL_REQUIRED");
+    const client = new Client(this.config.authId, this.config.authToken);
+    if (input.callUuid) await client.calls.hangup(input.callUuid);
+    else await client.calls.cancel(input.requestUuid);
+  }
+}
+
+
+===== FILE: apps/realtime-server/src/independentCallOrchestrator.ts =====
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { IndependentLiveCallManager, type IndependentLiveCallStart } from "./independentLiveCallManager.js";
+import type { CallLegRole } from "./independentCallSessionEngine.js";
+import { buildIndependentCallLegUrls } from "./independentCallLegUrls.js";
+import { buildIndependentCallLegXml } from "./independentCallLegXml.js";
+import { IndependentCallbackReplay } from "./independentCallbackReplay.js";
+import type { IndependentCallProvider } from "./independentCallProvider.js";
+import { IndependentTranslationPipeline } from "./independentTranslationPipeline.js";
+import type { SarvamProviders } from "./sarvamPipelineAdapters.js";
+import type { ManagementStore } from "../../../packages/database/src/managementStore.js";
+
+const roles = ["customer", "staff"] as const;
+export interface IndependentSocket { close(code?: number, reason?: string): void; readonly readyState?: number }
+interface Pipeline { frames: number; bytes: number; lastSequence: number; disconnectedAt?: number }
+interface Runtime {
+  translation?: IndependentTranslationPipeline;
+  createdAt: number;
+  closedAt?: number;
+  closeReason?: string;
+  tokens: Record<CallLegRole, string>;
+  pipelines: Record<CallLegRole, Pipeline>;
+  retiredStreams: Set<string>;
+  cleanupPending: Set<CallLegRole>;
+  cleanupAttempts: number;
+  cleanup?: Promise<void>;
+  creating: boolean;
+  resources: Partial<Record<CallLegRole, string>>;
+}
+interface Binding { socket: IndependentSocket; openedAt: number; streamId?: string; started: boolean }
+export interface IndependentOrchestratorOptions {
+  store?: ManagementStore;
+  offlineTranslationProviders?: SarvamProviders;
+  publicBaseUrl: string;
+  fromNumber: string;
+  provider: IndependentCallProvider;
+  manager?: IndependentLiveCallManager;
+  now?: () => number;
+  maxDurationMs?: number;
+  reconnectGraceMs?: number;
+  closedRetentionMs?: number;
+  startTimeoutMs?: number;
+}
+
+/** Two independent receive-only pipelines. There is intentionally no audio output API. */
+export class IndependentCallOrchestrator {
+  readonly manager: IndependentLiveCallManager;
+  readonly replay = new IndependentCallbackReplay();
+  readonly audioIsolationVerified = false as const;
+  readonly translationEnabled = false as const;
+  private readonly runtime = new Map<string, Runtime>();
+  private readonly sockets = new Map<string, Binding>();
+  private readonly socketOwners = new WeakMap<IndependentSocket, string>();
+  private readonly now: () => number;
+  private disposed = false;
+
+  constructor(readonly options: IndependentOrchestratorOptions) {
+    this.manager = options.manager ?? new IndependentLiveCallManager();
+    this.now = options.now ?? Date.now;
+    // Validate before any provider operation or route registration.
+    buildIndependentCallLegUrls(options.publicBaseUrl, "configuration-check", "customer");
+    if (!/^\+?[1-9]\d{6,14}$/.test(options.fromNumber)) throw new Error("INVALID_FROM_NUMBER");
+    if (options.offlineTranslationProviders && options.offlineTranslationProviders.mode !== "mock") throw new Error("BILLABLE_SARVAM_BLOCKED");
+  }
+
+  async create(input: IndependentLiveCallStart) {
+    if (this.disposed) throw new Error("ORCHESTRATOR_CLOSED");
+    if (this.options.provider.mode !== "offline") throw new Error("LIVE_CALL_APPROVAL_REQUIRED");
+    for (const number of [input.customerNumber, input.staffNumber]) {
+      if (typeof number !== "string" || !/^\+?[1-9]\d{6,14}$/.test(number)) throw new Error("INVALID_DESTINATION_NUMBER");
+    }
+    if (input.customerNumber.replace(/^\+/, "") === input.staffNumber.replace(/^\+/, "")) throw new Error("DISTINCT_LEGS_REQUIRED");
+    const record = this.manager.create(input);
+    const runtime: Runtime = {
+      createdAt: this.now(), tokens: { customer: randomBytes(32).toString("base64url"), staff: randomBytes(32).toString("base64url") },
+      pipelines: { customer: { frames: 0, bytes: 0, lastSequence: -1 }, staff: { frames: 0, bytes: 0, lastSequence: -1 } },
+      retiredStreams: new Set(), cleanupPending: new Set(), cleanupAttempts: 0, creating: true, resources: {},
+    };
+    this.runtime.set(record.sessionId, runtime);
+    if (this.options.offlineTranslationProviders) runtime.translation = new IndependentTranslationPipeline(record.sessionId, this.options.offlineTranslationProviders);
+    try {
+      await this.options.store?.beginSession(record.sessionId,input.staffNumber);
+      for (const role of roles) {
+        if (this.disposed || this.manager.getSession(record.sessionId)?.closed) throw new Error("SESSION_CLOSED_DURING_CREATE");
+        const urls = buildIndependentCallLegUrls(this.options.publicBaseUrl, record.sessionId, role);
+        const result = await this.options.provider.createLeg({
+          sessionId: record.sessionId, role, from: this.options.fromNumber,
+          to: role === "customer" ? input.customerNumber : input.staffNumber,
+          answerUrl: urls.answerUrl, hangupUrl: urls.completedUrl,
+        });
+        // Provider request UUID is stored independently of the eventual call UUID.
+        if (this.manager.getSession(record.sessionId)?.closed) {
+          // The create result may arrive after cancellation/shutdown. Retain teardown ownership
+          // even though the closed manager correctly refuses a new call binding.
+          if (typeof result.requestUuid !== "string" || !result.requestUuid.trim()) throw new Error("INVALID_PROVIDER_RESPONSE");
+          runtime.resources[role] = result.requestUuid;
+          runtime.cleanupPending.add(role);
+          await this.close(record.sessionId, "closed-during-create");
+          throw new Error("SESSION_CLOSED_DURING_CREATE");
+        }
+        this.manager.expectRequest(record.sessionId, role, result.requestUuid);
+        runtime.resources[role] = result.requestUuid;
+        runtime.cleanupPending.add(role);
+        await this.persist(record.sessionId,"provider.request.created");
+      }
+      return this.describe(record.sessionId);
+    } catch {
+      await this.close(record.sessionId, "provider-failure");
+      throw new Error("INDEPENDENT_PROVIDER_CREATE_FAILED");
+    } finally {
+      runtime.creating = false;
+    }
+  }
+
+  describe(sessionId: string) {
+    const session = this.manager.getSession(sessionId);
+    const record = this.manager.get(sessionId);
+    const runtime = this.runtime.get(sessionId);
+    if (!session || !record || !runtime) throw new Error("SESSION_NOT_FOUND");
+    return {
+      sessionId, state: record.state, closeReason: runtime.closeReason,
+      cleanupPending: runtime.closedAt !== undefined && runtime.cleanupPending.size > 0,
+      audioIsolationVerified: false, translationEnabled: false, providerMode: this.options.provider.mode,
+      offlineTranslation: runtime.translation ? { gates: runtime.translation.gates, queued: runtime.translation.queued, metrics: runtime.translation.metrics } : null,
+      customer: this.describeLeg(sessionId, "customer"), staff: this.describeLeg(sessionId, "staff"),
+    };
+  }
+
+  private describeLeg(sessionId: string, role: CallLegRole) {
+    const session = this.manager.getSession(sessionId)!;
+    const runtime = this.runtime.get(sessionId)!;
+    return {
+      requestUuid: this.manager.expectedRequest(sessionId, role) ?? null,
+      callUuid: session[role].callUuid, streamId: session[role].streamId,
+      answered: session[role].connected, socketConnected: Boolean(this.sockets.get(`${sessionId}:${role}`)?.started),
+      frames: runtime.pipelines[role].frames, bytes: runtime.pipelines[role].bytes,
+    };
+  }
+
+  answerXml(sessionId: string, role: CallLegRole): string {
+    const runtime = this.requireOpen(sessionId);
+    const leg = this.manager.getSession(sessionId)![role];
+    if (!leg.connected || !leg.callUuid) throw new Error("LEG_NOT_ANSWERED");
+    return buildIndependentCallLegXml({ sessionId, role, publicBaseUrl: this.options.publicBaseUrl, connectionToken: runtime.tokens[role] });
+  }
+
+  authorizeUpgrade(sessionId: string, role: CallLegRole, token: string): void {
+    const runtime = this.requireOpen(sessionId);
+    const expected = Buffer.from(runtime.tokens[role]);
+    const actual = Buffer.from(token);
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new Error("STREAM_TOKEN_MISMATCH");
+    if (!this.manager.expectedRequest(sessionId, role) || !this.manager.getSession(sessionId)![role].connected) throw new Error("LEG_NOT_ANSWERED");
+    const binding = this.sockets.get(`${sessionId}:${role}`);
+    if (binding && binding.socket.readyState !== undefined && binding.socket.readyState >= 2) {
+      this.disconnectSocket(sessionId, role, binding.socket);
+    }
+    if (this.sockets.has(`${sessionId}:${role}`)) throw new Error("DUPLICATE_SOCKET_OWNER");
+  }
+
+  openSocket(sessionId: string, role: CallLegRole, token: string, socket: IndependentSocket): void {
+    this.authorizeUpgrade(sessionId, role, token);
+    if (this.socketOwners.has(socket)) throw new Error("SOCKET_ALREADY_OWNED");
+    this.socketOwners.set(socket, `${sessionId}:${role}`);
+    this.sockets.set(`${sessionId}:${role}`, { socket, openedAt: this.now(), started: false });
+  }
+
+  startSocket(sessionId: string, role: CallLegRole, socket: IndependentSocket, start: unknown): void {
+    const runtime = this.requireOpen(sessionId);
+    const binding = this.requireSocket(sessionId, role, socket);
+    if (binding.streamId || !start || typeof start !== "object") throw new Error("INVALID_STREAM_START");
+    const data = start as { callId?: unknown; streamId?: unknown; tracks?: unknown; mediaFormat?: { encoding?: unknown; sampleRate?: unknown } };
+    const leg = this.manager.getSession(sessionId)![role];
+    if (data.callId !== leg.callUuid || typeof data.streamId !== "string" || !data.streamId.trim() || data.streamId.length > 128 ||
+      data.mediaFormat?.encoding !== "audio/x-mulaw" || data.mediaFormat.sampleRate !== 8000 ||
+      !Array.isArray(data.tracks) || data.tracks.length !== 1 || data.tracks[0] !== "inbound" || runtime.retiredStreams.has(data.streamId)) {
+      throw new Error("STREAM_OWNERSHIP_OR_FORMAT_MISMATCH");
+    }
+    if (leg.streamId && leg.streamId !== data.streamId) throw new Error("STREAM_ID_MISMATCH");
+    binding.streamId = data.streamId;
+    // WebSocket message alone cannot establish stream ownership. Wait for signed HTTP status.
+    binding.started = leg.streamId === data.streamId;
+    if (binding.started) {
+      runtime.pipelines[role].lastSequence = -1;
+      runtime.pipelines[role].disconnectedAt = undefined;
+      this.bindTranslation(sessionId, role, binding);
+    }
+  }
+
+  assertStreamAllowed(sessionId: string, role: CallLegRole, streamId: string): void {
+    const runtime = this.requireOpen(sessionId);
+    if (runtime.retiredStreams.has(streamId)) throw new Error("RETIRED_STREAM_REPLAY");
+    const leg = this.manager.getSession(sessionId)![role];
+    if (!leg.streamId && runtime.retiredStreams.size >= 256) throw new Error("STREAM_GENERATION_CAPACITY_EXCEEDED");
+    if (leg.streamId && leg.streamId !== streamId) throw new Error("STREAM_ALREADY_ATTACHED");
+  }
+
+  streamStarted(sessionId: string, role: CallLegRole, streamId: string): void {
+    const runtime = this.requireOpen(sessionId);
+    const binding = this.sockets.get(`${sessionId}:${role}`);
+    if (binding?.streamId) {
+      if (binding.streamId !== streamId) {
+        this.disconnectSocket(sessionId, role, binding.socket);
+        binding.socket.close(1008, "Stream ownership mismatch");
+        return;
+      }
+      if (!binding.started) runtime.pipelines[role].lastSequence = -1;
+      binding.started = true;
+      runtime.pipelines[role].disconnectedAt = undefined;
+      this.bindTranslation(sessionId, role, binding);
+    }
+  }
+
+  streamStopped(sessionId: string, role: CallLegRole, streamId: string): void {
+    const runtime = this.requireOpen(sessionId);
+    if (runtime.retiredStreams.size >= 256 && !runtime.retiredStreams.has(streamId)) throw new Error("STREAM_GENERATION_CAPACITY_EXCEEDED");
+    runtime.retiredStreams.add(streamId);
+    runtime.translation?.disconnect(role);
+    runtime.pipelines[role].disconnectedAt = this.now();
+    const binding = this.sockets.get(`${sessionId}:${role}`);
+    if (binding?.streamId === streamId) {
+      this.sockets.delete(`${sessionId}:${role}`);
+      binding.socket.close(1000, "Stream stopped");
+    }
+  }
+
+  isRetiredStream(sessionId: string, streamId: string): boolean {
+    return this.runtime.get(sessionId)?.retiredStreams.has(streamId) ?? false;
+  }
+
+  media(sessionId: string, role: CallLegRole, socket: IndependentSocket, message: unknown): boolean {
+    const runtime = this.requireOpen(sessionId);
+    const binding = this.requireSocket(sessionId, role, socket);
+    if (!binding.started) return false; // No buffering/forwarding during callback/start races.
+    const data = message as { streamId?: unknown; sequenceNumber?: unknown; media?: { track?: unknown; payload?: unknown } };
+    const pipeline = runtime.pipelines[role];
+    if (!data || data.streamId !== binding.streamId || data.streamId !== this.manager.getSession(sessionId)![role].streamId ||
+      data.media?.track !== "inbound" || typeof data.media.payload !== "string" || data.media.payload.length > 22000 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data.media.payload) || !data.media.payload.length ||
+      typeof data.sequenceNumber !== "number" || !Number.isSafeInteger(data.sequenceNumber) || data.sequenceNumber <= pipeline.lastSequence) {
+      throw new Error("INVALID_MEDIA_IDENTITY_OR_SEQUENCE");
+    }
+    pipeline.lastSequence = data.sequenceNumber;
+    pipeline.frames++;
+    pipeline.bytes += Buffer.from(data.media.payload, "base64").length;
+    runtime.translation?.receive({ sessionId, role, socket, callUuid: this.manager.getSession(sessionId)![role].callUuid!, streamId: binding.streamId! }, data.sequenceNumber, data.media.payload);
+    return true;
+  }
+
+  disconnectSocket(sessionId: string, role: CallLegRole, socket: IndependentSocket): boolean {
+    const key = `${sessionId}:${role}`;
+    if (this.sockets.get(key)?.socket !== socket) return false;
+    this.sockets.delete(key);
+    const runtime = this.runtime.get(sessionId);
+    if (runtime) runtime.pipelines[role].disconnectedAt = this.now();
+    runtime?.translation?.disconnect(role);
+    return true;
+  }
+
+  async close(sessionId: string, reason: string): Promise<void> {
+    const runtime = this.runtime.get(sessionId);
+    if (!runtime) return;
+    if (runtime.closedAt === undefined) {
+      runtime.closedAt = this.now();
+      runtime.closeReason = reason;
+      runtime.translation?.close();
+      this.manager.close(sessionId);
+      for (const role of roles) {
+        const key = `${sessionId}:${role}`;
+        const binding = this.sockets.get(key);
+        this.sockets.delete(key);
+        binding?.socket.close(1000, "Session closed");
+      }
+    }
+    if (runtime.cleanup) return runtime.cleanup;
+    if (this.options.store) { try { await this.persist(sessionId,"session.closed","closed"); } catch { /* Provider teardown still runs during database outage. */ } }
+    runtime.cleanupAttempts++;
+    runtime.cleanup = (async () => {
+      for (const role of [...runtime.cleanupPending]) {
+        try {
+          const requestUuid = runtime.resources[role]!;
+          await this.options.provider.stopLeg({ requestUuid, callUuid: this.manager.getSession(sessionId)?.[role].callUuid ?? null });
+          runtime.cleanupPending.delete(role);
+        } catch { /* Retain bounded failed-cleanup state. Never report successful teardown. */ }
+      }
+    })();
+    try { await runtime.cleanup; } finally { runtime.cleanup = undefined; }
+  }
+
+  async sweep(): Promise<void> {
+    const now = this.now();
+    for (const [sessionId, runtime] of this.runtime) {
+      if (runtime.closedAt !== undefined) {
+        if (runtime.cleanupPending.size && runtime.cleanupAttempts < 5) await this.close(sessionId, runtime.closeReason ?? "cleanup-retry");
+        if (!runtime.creating && !runtime.cleanupPending.size && now - runtime.closedAt >= (this.options.closedRetentionMs ?? 60_000)) {
+          this.manager.removeClosed(sessionId);
+          this.replay.forgetSession(sessionId);
+          this.runtime.delete(sessionId);
+        }
+        continue;
+      }
+      if (now - runtime.createdAt >= (this.options.maxDurationMs ?? 30 * 60_000)) {
+        await this.close(sessionId, "session-timeout");
+        continue;
+      }
+      for (const role of roles) {
+        let binding = this.sockets.get(`${sessionId}:${role}`);
+        if (binding && binding.socket.readyState !== undefined && binding.socket.readyState >= 2) {
+          this.disconnectSocket(sessionId, role, binding.socket);
+          binding = undefined;
+        }
+        if (binding && !binding.started && now - binding.openedAt >= (this.options.startTimeoutMs ?? 10_000)) {
+          await this.close(sessionId, "stream-start-timeout");
+          break;
+        }
+        const disconnectedAt = runtime.pipelines[role].disconnectedAt;
+        if (disconnectedAt !== undefined && now - disconnectedAt >= (this.options.reconnectGraceMs ?? 30_000)) {
+          await this.close(sessionId, "reconnect-timeout");
+          break;
+        }
+      }
+    }
+  }
+
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    for (const sessionId of this.runtime.keys()) await this.close(sessionId, "server-shutdown");
+  }
+  forwardAudio(): never { throw new Error("AUDIO_ISOLATION_UNVERIFIED"); }
+  enableTranslation(): never { throw new Error("AUDIO_ISOLATION_UNVERIFIED"); }
+  get sessionCount(): number { return this.runtime.size; }
+  get socketCount(): number { return this.sockets.size; }
+  async persist(sessionId: string, event = "state.changed", eventKey?: string) { await this.options.store?.snapshot(this.describe(sessionId),event,eventKey); }
+  private bindTranslation(sessionId: string, role: CallLegRole, binding: Binding) {
+    this.runtime.get(sessionId)?.translation?.bind({ sessionId, role, socket: binding.socket, streamId: binding.streamId!, callUuid: this.manager.getSession(sessionId)![role].callUuid! });
+  }
+
+  private requireOpen(sessionId: string): Runtime {
+    const runtime = this.runtime.get(sessionId);
+    if (this.disposed || !runtime || this.manager.getSession(sessionId)?.closed) throw new Error("SESSION_NOT_OPEN");
+    return runtime;
+  }
+  private requireSocket(sessionId: string, role: CallLegRole, socket: IndependentSocket): Binding {
+    const binding = this.sockets.get(`${sessionId}:${role}`);
+    if (!binding || binding.socket !== socket) throw new Error("SOCKET_OWNERSHIP_MISMATCH");
+    return binding;
+  }
+}
+
+
+===== FILE: apps/realtime-server/src/independentLiveCallManager.ts =====
+import {
+  IndependentCallSessionEngine,
+  type IndependentCallSession,
+  type CallLegRole,
+} from "./independentCallSessionEngine.js";
+
+import {
+  IndependentCallCallbackController,
+} from "./independentCallCallbackController.js";
+
+export interface IndependentLiveCallStart {
+  customerNumber: string;
+  staffNumber: string;
+}
+
+export interface IndependentLiveCallRecord {
+  sessionId: string;
+  customerNumber: string;
+  staffNumber: string;
+  createdAt: number;
+  state: "pending" | "connecting" | "connected" | "closed";
+}
+
+export class IndependentLiveCallManager {
+  private readonly engine = new IndependentCallSessionEngine();
+
+  private readonly callbacks =
+    new IndependentCallCallbackController(this.engine);
+
+  private readonly records =
+    new Map<string, IndependentLiveCallRecord>();
+
+  private readonly requests = new Map<string, string>();
+  private readonly requestOwners = new Map<string, string>();
+
+  constructor(private readonly maxSessions = 1000) {}
+
+  create(input: IndependentLiveCallStart): IndependentLiveCallRecord {
+    if (this.records.size >= this.maxSessions) throw new Error("SESSION_CAPACITY_EXCEEDED");
+    if (!input.customerNumber?.trim()) {
+      throw new Error("Customer number required");
+    }
+
+    if (!input.staffNumber?.trim()) {
+      throw new Error("Staff number required");
+    }
+
+    const session = this.engine.createSession();
+
+    const record: IndependentLiveCallRecord = {
+      sessionId: session.sessionId,
+      customerNumber: input.customerNumber.trim(),
+      staffNumber: input.staffNumber.trim(),
+      createdAt: Date.now(),
+      state: "pending",
+    };
+
+    this.records.set(session.sessionId, record);
+
+    return { ...record };
+  }
+
+  registerCall(
+    sessionId: string,
+    role: CallLegRole,
+    callUuid: string
+  ): IndependentCallSession {
+    const session = this.callbacks.registerAnsweredLeg({
+      sessionId,
+      role,
+      callUuid,
+    });
+
+    this.refreshState(sessionId, session);
+    return session;
+  }
+
+  registerStream(
+    sessionId: string,
+    role: CallLegRole,
+    callUuid: string,
+    streamId: string
+  ): IndependentCallSession {
+    const session = this.callbacks.registerStream({
+      sessionId,
+      role,
+      callUuid,
+      streamId,
+    });
+
+    this.refreshState(sessionId, session);
+    return session;
+  }
+
+  disconnectStream(
+    sessionId: string,
+    role: CallLegRole,
+    streamId: string
+  ): boolean {
+    const detached = this.callbacks.handleStreamDisconnected({
+      sessionId,
+      role,
+      streamId,
+    });
+
+    const session = this.engine.getSession(sessionId);
+
+    if (session) {
+      this.refreshState(sessionId, session);
+    }
+
+    return detached;
+  }
+
+  completeCall(
+    sessionId: string,
+    role: CallLegRole,
+    callUuid: string
+  ): boolean {
+    const closed = this.callbacks.handleCallCompleted({
+      sessionId,
+      role,
+      callUuid,
+    });
+
+    if (closed) {
+      const record = this.records.get(sessionId);
+
+      if (record) {
+        record.state = "closed";
+      }
+    }
+
+    return closed;
+  }
+
+  get(sessionId: string): IndependentLiveCallRecord | undefined {
+    const record = this.records.get(sessionId);
+    return record ? { ...record } : undefined;
+  }
+
+  getSession(sessionId: string): IndependentCallSession | undefined {
+    return this.engine.getSession(sessionId);
+  }
+
+  expectRequest(sessionId: string, role: CallLegRole, requestUuid: string): void {
+    const session = this.engine.getSession(sessionId);
+    if (!session || session.closed || !requestUuid.trim()) throw new Error("INVALID_PROVIDER_REQUEST");
+    const key = `${sessionId}:${role}`;
+    const owner = this.requestOwners.get(requestUuid);
+    const expected = this.requests.get(key);
+    if ((owner && owner !== key) || (expected && expected !== requestUuid)) throw new Error("REQUEST_UUID_OWNERSHIP_MISMATCH");
+    this.requests.set(key, requestUuid);
+    this.requestOwners.set(requestUuid, key);
+  }
+
+  expectedRequest(sessionId: string, role: CallLegRole): string | undefined {
+    return this.requests.get(`${sessionId}:${role}`);
+  }
+
+  assertProviderRequest(sessionId: string, role: CallLegRole, requestUuid: unknown): void {
+    const expected = this.expectedRequest(sessionId, role);
+    if (!expected || typeof requestUuid !== "string" || requestUuid !== expected) {
+      throw new Error("REQUEST_UUID_OWNERSHIP_MISMATCH");
+    }
+  }
+
+  close(sessionId: string): boolean {
+    const closed = this.engine.closeSession(sessionId);
+    const record = this.records.get(sessionId);
+    if (record) record.state = "closed";
+    return closed;
+  }
+
+  removeClosed(sessionId: string): boolean {
+    if (!this.engine.removeClosedSession(sessionId)) return false;
+    for (const role of ["customer", "staff"] as const) {
+      const key = `${sessionId}:${role}`;
+      const requestUuid = this.requests.get(key);
+      if (requestUuid) this.requestOwners.delete(requestUuid);
+      this.requests.delete(key);
+    }
+    this.records.delete(sessionId);
+    return true;
+  }
+
+  allRecords(): IndependentLiveCallRecord[] {
+    return [...this.records.values()].map(record => ({ ...record }));
+  }
+
+  private refreshState(
+    sessionId: string,
+    session: IndependentCallSession
+  ): void {
+    const record = this.records.get(sessionId);
+
+    if (!record || record.state === "closed") {
+      return;
+    }
+
+    if (session.closed) {
+      record.state = "closed";
+      return;
+    }
+
+    if (session.customer.streamId && session.staff.streamId) {
+      record.state = "connected";
+    } else if (session.customer.connected || session.staff.connected) {
+      record.state = "connecting";
+    } else {
+      record.state = "pending";
+    }
+  }
+}
+
+
+===== FILE: apps/realtime-server/src/independentTranslationPipeline.ts =====
+import { SmartLanguageRouter, detectMixedLanguage } from "@nunes/language-router";
+import { protectEntities, restoreEntities } from "@nunes/translation";
+import { decodeMulaw, validAudioBase64 } from "./telephonyAudioCodec.js";
+import { providerStage, type SarvamProviders } from "./sarvamPipelineAdapters.js";
+type Role = "customer" | "staff";
+const opposite = (role: Role): Role => role === "customer" ? "staff" : "customer";
+export interface AudioOwner { sessionId: string; role: Role; callUuid: string; streamId: string; socket: object }
+interface Leg { owner: AudioOwner; sequence: number; chunks: Buffer[]; bytes: number; silence: number; speaking: boolean }
+interface Prepared { destination: Role; utterance: number; audio: Buffer; generation: number }
+/** Offline sink deliberately has no socket, transport or provider client. */
+export class MockPlaybackSink {
+  readonly messages: Array<{ destination: Role; event: string; streamId?: string; media?: { contentType: string; sampleRate: number; payload: string } }> = [];
+  record(message: typeof this.messages[number]) { if (this.messages.length >= 32) this.messages.shift(); this.messages.push(message); }
+}
+/** Only the authenticated orchestrator binds owners. All results are mock-only; live output is structurally absent. */
+export class IndependentTranslationPipeline {
+  readonly gates = Object.freeze({ documentationContractVerified: true, offlineSimulationIsolation: true, actualAudioIsolationVerified: false, productionTranslationAuthorized: false });
+  readonly router = new SmartLanguageRouter("ta");
+  readonly metrics = { accepted: 0, held: 0, prepared: 0, cancelled: 0, overflow: 0, echoSuppressed: 0, lastError: "", timings: [] as Array<{ stt: number; translation: number; tts: number; total: number }> };
+  private legs: Partial<Record<Role, Leg>> = {};
+  private generation = 0;
+  private closed = false;
+  private utterance = 0;
+  private queues: Record<Role, Prepared[]> = { customer: [], staff: [] };
+  private pending: Record<Role, number> = { customer: 0, staff: 0 };
+  private tails: Record<Role, Promise<void>> = { customer: Promise.resolve(), staff: Promise.resolve() };
+  private controllers: Record<Role, Set<AbortController>> = { customer: new Set(), staff: new Set() };
+  private echoes: Partial<Record<Role, { audio: Buffer; time: number }>> = {};
+  private clears: Record<Role, boolean> = { customer: false, staff: false };
+  constructor(readonly sessionId: string, private readonly providers: SarvamProviders, private readonly timeoutMs = 2000) {
+    if (providers.mode !== "mock") throw new Error("BILLABLE_SARVAM_BLOCKED");
+  }
+  bind(owner: AudioOwner) {
+    if (this.closed || (owner.role !== "customer" && owner.role !== "staff") || owner.sessionId !== this.sessionId || !owner.callUuid || !owner.streamId) throw new Error("INVALID_AUDIO_OWNER");
+    const previous = this.legs[owner.role];
+    if (previous && this.same(previous.owner, owner)) return;
+    if (Object.values(this.legs).some(leg => leg && leg.owner.socket === owner.socket && leg.owner.role !== owner.role)) throw new Error("SOCKET_ALREADY_OWNED");
+    this.invalidate();
+    if (previous) this.router.reset();
+    this.legs[owner.role] = { owner: { ...owner }, sequence: -1, chunks: [], bytes: 0, silence: 0, speaking: false };
+  }
+  disconnect(role: Role) { delete this.legs[role]; this.invalidate(); this.router.reset(); }
+  close() { this.closed = true; this.legs = {}; this.invalidate(); this.echoes = {}; }
+  private same(a: AudioOwner, b: AudioOwner) { return a.sessionId === b.sessionId && a.role === b.role && a.callUuid === b.callUuid && a.streamId === b.streamId && a.socket === b.socket; }
+  private invalidate() {
+    this.generation++;
+    this.echoes = {}; this.clears = { customer: false, staff: false };
+    for (const role of ["customer", "staff"] as const) {
+      for (const controller of this.controllers[role]) controller.abort();
+      this.queues[role] = [];
+      const leg = this.legs[role]; if (leg) { leg.chunks = []; leg.bytes = 0; leg.silence = 0; leg.speaking = false; }
+    }
+  }
+  receive(owner: AudioOwner, sequence: number, payload: string) {
+    const leg = this.legs[owner.role];
+    if (this.closed || !leg || !this.same(leg.owner, owner) || !Number.isSafeInteger(sequence) || sequence <= leg.sequence) throw new Error("INVALID_AUDIO_IDENTITY_OR_SEQUENCE");
+    const bytes = validAudioBase64(payload, 16000); leg.sequence = sequence;
+    const echo = this.echoes[owner.role];
+    if (echo && Date.now() - echo.time < 1500 && bytes.equals(echo.audio)) { this.metrics.echoSuppressed++; return; }
+    const pcm = decodeMulaw(bytes);
+    const rms = Math.sqrt(pcm.reduce((sum, value) => sum + value * value, 0) / pcm.length);
+    const voiced = rms >= 500;
+    if (voiced && !leg.speaking) {
+      // Barge-in cancels work destined for the speaking leg; no real clearAudio is sent.
+      for (const controller of this.controllers[opposite(owner.role)]) controller.abort();
+      this.queues[opposite(owner.role)] = [];
+      this.clears[opposite(owner.role)] = true;
+      leg.speaking = true;
+    }
+    if (!leg.speaking) return;
+    this.metrics.accepted++; leg.chunks.push(bytes); leg.bytes += bytes.length;
+    leg.silence = voiced ? 0 : leg.silence + bytes.length;
+    if (leg.silence >= 2400 || leg.bytes >= 32000) this.flush(owner.role);
+  }
+  flush(role: Role) {
+    const leg = this.legs[role]; if (!leg?.bytes) return;
+    const audio = Buffer.concat(leg.chunks); leg.chunks = []; leg.bytes = 0; leg.silence = 0; leg.speaking = false;
+    if (audio.length < 800 || !this.legs[opposite(role)]) { this.metrics.held++; return; }
+    if (this.pending[role] >= 4) { this.metrics.overflow++; this.invalidate(); return; }
+    const generation = this.generation, utterance = ++this.utterance, controller = new AbortController();
+    this.controllers[role].add(controller); this.pending[role]++;
+    this.tails[role] = this.tails[role].then(async () => {
+      if (controller.signal.aborted || generation !== this.generation) return;
+      await this.process(role, audio, utterance, generation, controller);
+    }).catch(() => { this.metrics.lastError = "PIPELINE_FAILURE"; }).finally(() => { this.controllers[role].delete(controller); this.pending[role]--; });
+  }
+  private async process(role: Role, audio: Buffer, utterance: number, generation: number, controller: AbortController) {
+    const began = performance.now(); const timings = { stt: 0, translation: 0, tts: 0, total: 0 };
+    const stage = async <T>(name: "stt" | "translation" | "tts", operation: (signal: AbortSignal) => Promise<T>) => {
+      const start = performance.now(); try { return await providerStage(operation, controller.signal, this.timeoutMs); } finally { timings[name] += performance.now() - start; }
+    };
+    try {
+      const transcript = await stage("stt", signal => this.providers.transcribe(decodeMulaw(audio), signal));
+      if (!transcript.final || !transcript.text.trim() || transcript.text.length > 2000 || !Number.isFinite(transcript.confidence)) { this.metrics.held++; return; }
+      const detected = detectMixedLanguage(transcript.text, transcript.language, transcript.confidence);
+      if (detected.language === "unknown" || transcript.confidence < .72) { this.metrics.held++; return; }
+      if (role === "customer") this.router.observe(detected.language, transcript.confidence);
+      if (this.router.getMode() === "DIRECT_BYPASS") { this.metrics.lastError = "ORIGINAL_AUDIO_PATH_UNVERIFIED"; this.metrics.held++; return; }
+      if (this.router.getStableLanguage() !== "hi" || (role === "staff" && detected.language !== "ta") || (role === "customer" && detected.language !== "hi")) { this.metrics.held++; return; }
+      if (/NUNESENTITY\d*/i.test(transcript.text)) throw new Error("ENTITY_TOKEN_COLLISION");
+      const protectedText = protectEntities(transcript.text);
+      const source = role === "customer" ? "hi-IN" : "ta-IN", target = role === "customer" ? "ta-IN" : "hi-IN";
+      const translated = await stage("translation", signal => this.providers.translate(protectedText.text, source, target, signal));
+      const tokens = translated.match(/NUNESENTITY\d+/gi) ?? [];
+      if (tokens.length !== protectedText.entities.length || protectedText.entities.some(entity => tokens.filter(token => token.toUpperCase() === entity.token).length !== 1)) throw new Error("ENTITY_INTEGRITY_FAILED");
+      const restored = restoreEntities(translated, protectedText.entities);
+      const result = await stage("tts", signal => this.providers.synthesize(restored, target, signal));
+      controller.signal.throwIfAborted();
+      if (generation !== this.generation || this.closed || !this.legs[opposite(role)]) return;
+      if (result.encoding !== "audio/x-mulaw" || result.sampleRate !== 8000 || !result.audio.length || result.audio.length > 80000) throw new Error("INVALID_TTS_AUDIO");
+      const queue = this.queues[role];
+      if (queue.length >= 4 || queue.reduce((total, item) => total + item.audio.length, 0) + result.audio.length > 128000) { this.metrics.overflow++; this.invalidate(); return; }
+      queue.push({ destination: opposite(role), audio: Buffer.from(result.audio), generation, utterance }); this.metrics.prepared++;
+    } catch (error) {
+      if (controller.signal.aborted) this.metrics.cancelled++;
+      else this.metrics.lastError = error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message : "PROVIDER_FAILURE";
+    } finally { timings.total = performance.now() - began; if (this.metrics.timings.length >= 32) this.metrics.timings.shift(); this.metrics.timings.push(timings); }
+  }
+  async idle() { await Promise.all([this.tails.customer, this.tails.staff]); }
+  drainMock(role: Role, sink: MockPlaybackSink, authorization: { offlineTranslationAuthorized: boolean; simulatedIsolationVerified: boolean }) {
+    if (!authorization.offlineTranslationAuthorized || !authorization.simulatedIsolationVerified) throw new Error("OFFLINE_PLAYBACK_GATE_CLOSED");
+    if (this.closed) throw new Error("SESSION_CLOSED");
+    if (this.clears[role] && this.legs[opposite(role)]) { sink.record({ destination: opposite(role), event: "clearAudio", streamId: this.legs[opposite(role)]!.owner.streamId }); this.clears[role] = false; }
+    for (const item of this.queues[role].splice(0)) {
+      if (item.generation !== this.generation) continue;
+      sink.record({ destination: item.destination, event: "playAudio", media: { contentType: "audio/x-mulaw", sampleRate: 8000, payload: item.audio.toString("base64") } });
+      this.echoes[item.destination] = { audio: item.audio, time: Date.now() };
+    }
+  }
+  productionPlayback(): never { throw new Error("AUDIO_ISOLATION_UNVERIFIED"); }
+  get queued() { return { customerToStaff: this.queues.customer.length, staffToCustomer: this.queues.staff.length }; }
+}
+
+
+===== FILE: apps/realtime-server/src/sarvamPipelineAdapters.ts =====
+import { pcm16Wav, validAudioBase64, wavToPlivoMulaw } from "./telephonyAudioCodec.js";
+export type PipelineLanguage = "hi-IN" | "ta-IN";
+export interface Transcript { text: string; language: string | null; confidence: number; final: boolean }
+export interface SarvamProviders {
+  readonly mode: "mock" | "live";
+  transcribe(pcm: Int16Array, signal: AbortSignal): Promise<Transcript>;
+  translate(text: string, source: PipelineLanguage, target: PipelineLanguage, signal: AbortSignal): Promise<string>;
+  synthesize(text: string, target: PipelineLanguage, signal: AbortSignal): Promise<{ audio: Buffer; encoding: "audio/x-mulaw"; sampleRate: 8000 }>;
+}
+export interface SarvamRequest {
+  endpoint: "/speech-to-text" | "/translate" | "/text-to-speech";
+  fields: Record<string, unknown>;
+  file?: { name: string; contentType: "audio/wav"; bytes: Buffer };
+}
+export interface SarvamTransport {
+  readonly mode: "mock" | "live";
+  request(request: SarvamRequest, signal: AbortSignal): Promise<unknown>;
+}
+export class ProviderFailure extends Error {
+  constructor(readonly code: string, readonly retryable = false) { super(code); }
+}
+export interface SarvamAdapterConfig {
+  sttModel?: "saaras:v4";
+  translationModel?: "sarvam-translate:v1";
+  ttsModel?: "bulbul:v3";
+  speaker?: string;
+  keyterms?: string[];
+}
+/** Contract-shaped adapters; Phase 3 permits only injected mock transports. No fetch/client/key exists here. */
+export class SarvamContractAdapters implements SarvamProviders {
+  readonly mode = "mock" as const;
+  private readonly config: Required<SarvamAdapterConfig>;
+  constructor(private readonly transport: SarvamTransport, config: SarvamAdapterConfig = {}) {
+    if (transport.mode !== "mock") throw new Error("BILLABLE_SARVAM_BLOCKED");
+    this.config = { sttModel: "saaras:v4", translationModel: "sarvam-translate:v1", ttsModel: "bulbul:v3", speaker: "shubh", keyterms: ["Fluke", "GE Druck", "pressure calibrator", "GST"], ...config };
+    if (this.config.sttModel !== "saaras:v4" || this.config.translationModel !== "sarvam-translate:v1" || this.config.ttsModel !== "bulbul:v3" || this.config.keyterms.length > 50 || this.config.keyterms.some(term => term.length > 64)) throw new Error("INVALID_PROVIDER_CONFIG");
+  }
+  async transcribe(pcm: Int16Array, signal: AbortSignal): Promise<Transcript> {
+    if (!pcm.length || pcm.length > 8000 * 10) throw new ProviderFailure("INVALID_UTTERANCE_AUDIO");
+    const result = await this.transport.request({ endpoint: "/speech-to-text", fields: {
+      model: this.config.sttModel, mode: "codemix", language_code: "unknown", keyterms: JSON.stringify(this.config.keyterms),
+    }, file: { name: "utterance.wav", contentType: "audio/wav", bytes: pcm16Wav(pcm) } }, signal) as { transcript?: unknown; language_code?: unknown; language_probability?: unknown };
+    if (!result || typeof result.transcript !== "string" || result.transcript.length > 2000) throw new ProviderFailure("INVALID_STT_RESPONSE");
+    return { text: result.transcript, language: typeof result.language_code === "string" ? result.language_code : null,
+      confidence: typeof result.language_probability === "number" && Number.isFinite(result.language_probability) ? Math.max(0, Math.min(1, result.language_probability)) : 0, final: true };
+  }
+  async translate(text: string, source: PipelineLanguage, target: PipelineLanguage, signal: AbortSignal): Promise<string> {
+    if (!text.trim() || text.length > 2000 || source === target) throw new ProviderFailure("INVALID_TRANSLATION_INPUT");
+    const result = await this.transport.request({ endpoint: "/translate", fields: { input: text, source_language_code: source, target_language_code: target, model: this.config.translationModel, mode: "formal", numerals_format: "international" } }, signal) as { translated_text?: unknown };
+    if (!result || typeof result.translated_text !== "string" || !result.translated_text.trim() || result.translated_text.length > 2500) throw new ProviderFailure("INVALID_TRANSLATION_RESPONSE");
+    return result.translated_text;
+  }
+  async synthesize(text: string, target: PipelineLanguage, signal: AbortSignal) {
+    if (!text.trim() || text.length > 2500) throw new ProviderFailure("INVALID_TTS_INPUT");
+    const result = await this.transport.request({ endpoint: "/text-to-speech", fields: { text, target_language_code: target, model: this.config.ttsModel, speaker: this.config.speaker, speech_sample_rate: 8000, output_audio_codec: "wav", pace: 1 } }, signal) as { audios?: unknown };
+    if (!result || !Array.isArray(result.audios) || result.audios.length !== 1) throw new ProviderFailure("INVALID_TTS_RESPONSE");
+    const audio = wavToPlivoMulaw(validAudioBase64(result.audios[0], 320_044));
+    if (!audio.length || audio.length > 80_000) throw new ProviderFailure("TTS_AUDIO_CAPACITY_EXCEEDED");
+    return { audio, encoding: "audio/x-mulaw" as const, sampleRate: 8000 as const };
+  }
+}
+
+export class ScriptedSarvamMock implements SarvamProviders {
+  readonly mode = "mock" as const;
+  readonly calls = { stt: 0, translation: 0, tts: 0 };
+  transcripts: Transcript[] = [];
+  translateText = async (text: string, _source: PipelineLanguage, _target: PipelineLanguage, _signal: AbortSignal) => text;
+  ttsAudio = Buffer.alloc(160, 255);
+  async transcribe(_pcm: Int16Array, signal: AbortSignal): Promise<Transcript> {
+    signal.throwIfAborted(); this.calls.stt++;
+    return this.transcripts.shift() ?? { text: "", language: null, confidence: 0, final: true };
+  }
+  async translate(text: string, source: PipelineLanguage, target: PipelineLanguage, signal: AbortSignal): Promise<string> {
+    signal.throwIfAborted(); this.calls.translation++;
+    return this.translateText(text, source, target, signal);
+  }
+  async synthesize(_text: string, _target: PipelineLanguage, signal: AbortSignal) {
+    signal.throwIfAborted(); this.calls.tts++;
+    return { audio: Buffer.from(this.ttsAudio), encoding: "audio/x-mulaw" as const, sampleRate: 8000 as const };
+  }
+}
+
+/** Per-attempt deadline + abort propagation; only explicitly retryable failures retry, at most twice. */
+export async function providerStage<T>(operation: (signal: AbortSignal) => Promise<T>, parent: AbortSignal, timeoutMs: number, retries = 1): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isInteger(retries) || retries < 0 || retries > 2) throw new Error("INVALID_PROVIDER_DEADLINE");
+  for (let attempt = 0; ; attempt++) {
+    parent.throwIfAborted();
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abortListener: (() => void) | undefined;
+    try {
+      const interrupted = new Promise<never>((_, reject) => {
+        abortListener = () => { controller.abort(); reject(new ProviderFailure("PROVIDER_CANCELLED")); };
+        parent.addEventListener("abort", abortListener, { once: true });
+        timer = setTimeout(() => { controller.abort(); reject(new ProviderFailure("PROVIDER_TIMEOUT")); }, timeoutMs);
+      });
+      const result = await Promise.race([Promise.resolve().then(() => { controller.signal.throwIfAborted(); return operation(controller.signal); }), interrupted]);
+      parent.throwIfAborted(); return result;
+    } catch (error) {
+      if (parent.aborted || !(error instanceof ProviderFailure) || !error.retryable || attempt >= retries) throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (abortListener) parent.removeEventListener("abort", abortListener);
+      controller.abort();
+    }
+  }
+}
+
+
+===== FILE: apps/realtime-server/src/telephonyAudioCodec.ts =====
+/** G.711 mu-law and mono PCM16 WAV only; unknown containers/formats fail closed. */
+export function decodeMulaw(input: Buffer): Int16Array {
+  const pcm = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i++) {
+    const value = (~input[i]) & 255;
+    const magnitude = (((value & 15) << 3) + 132) << ((value >> 4) & 7);
+    pcm[i] = (value & 128) ? 132 - magnitude : magnitude - 132;
+  }
+  return pcm;
+}
+export function encodeMulaw(pcm: Int16Array): Buffer {
+  const output = Buffer.alloc(pcm.length);
+  for (let i = 0; i < pcm.length; i++) {
+    const sign = pcm[i] < 0 ? 128 : 0;
+    let value = Math.min(32635, Math.abs(pcm[i])) + 132;
+    let exponent = 7;
+    for (let mask = 0x4000; exponent > 0 && !(value & mask); mask >>= 1) exponent--;
+    output[i] = (~(sign | (exponent << 4) | ((value >> (exponent + 3)) & 15))) & 255;
+  }
+  return output;
+}
+export function pcm16Wav(pcm: Int16Array, sampleRate = 8000): Buffer {
+  if (![8000, 16000, 24000].includes(sampleRate)) throw new Error("UNSUPPORTED_SAMPLE_RATE");
+  const wav = Buffer.alloc(44 + pcm.length * 2);
+  wav.write("RIFF", 0); wav.writeUInt32LE(wav.length - 8, 4); wav.write("WAVEfmt ", 8);
+  wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(sampleRate, 24); wav.writeUInt32LE(sampleRate * 2, 28);
+  wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write("data", 36); wav.writeUInt32LE(pcm.length * 2, 40);
+  for (let i = 0; i < pcm.length; i++) wav.writeInt16LE(pcm[i], 44 + i * 2);
+  return wav;
+}
+export function readPcm16Wav(wav: Buffer): { pcm: Int16Array; sampleRate: number } {
+  if (wav.length < 44 || wav.length > 2_000_000 || wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE" || wav.readUInt32LE(4) + 8 !== wav.length) throw new Error("INVALID_WAV");
+  let sampleRate = 0;
+  let data: Buffer | undefined;
+  for (let offset = 12; offset + 8 <= wav.length;) {
+    const id = wav.toString("ascii", offset, offset + 4);
+    const length = wav.readUInt32LE(offset + 4);
+    const end = offset + 8 + length;
+    if (end > wav.length) throw new Error("TRUNCATED_WAV");
+    if (id === "fmt ") {
+      if (sampleRate || length < 16 || wav.readUInt16LE(offset + 8) !== 1 || wav.readUInt16LE(offset + 10) !== 1 || wav.readUInt16LE(offset + 22) !== 16 || wav.readUInt16LE(offset + 20) !== 2) throw new Error("UNSUPPORTED_WAV_FORMAT");
+      sampleRate = wav.readUInt32LE(offset + 12);
+      if (![8000, 16000, 24000].includes(sampleRate) || wav.readUInt32LE(offset + 16) !== sampleRate * 2) throw new Error("UNSUPPORTED_SAMPLE_RATE");
+    } else if (id === "data") {
+      if (data || !length || length % 2) throw new Error("INVALID_WAV_DATA");
+      data = wav.subarray(offset + 8, end);
+    }
+    offset = end + (length % 2);
+  }
+  if (!sampleRate || !data) throw new Error("MISSING_WAV_CHUNKS");
+  const pcm = new Int16Array(data.length / 2);
+  for (let i = 0; i < pcm.length; i++) pcm[i] = data.readInt16LE(i * 2);
+  return { pcm, sampleRate };
+}
+export function wavToPlivoMulaw(wav: Buffer): Buffer {
+  const { pcm, sampleRate } = readPcm16Wav(wav);
+  if (sampleRate === 8000) return encodeMulaw(pcm);
+  // Integer-rate box filter before decimation; telephony fidelity still needs provider testing.
+  const factor = sampleRate / 8000;
+  const downsampled = new Int16Array(Math.floor(pcm.length / factor));
+  for (let i = 0; i < downsampled.length; i++) {
+    let sum = 0;
+    for (let j = 0; j < factor; j++) sum += pcm[i * factor + j];
+    downsampled[i] = Math.round(sum / factor);
+  }
+  return encodeMulaw(downsampled);
+}
+export function validAudioBase64(value: unknown, maxBytes = 80_000): Buffer {
+  if (typeof value !== "string" || !value.length || value.length > Math.ceil(maxBytes / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) throw new Error("INVALID_AUDIO_PAYLOAD");
+  const data = Buffer.from(value, "base64");
+  if (!data.length || data.length > maxBytes || data.toString("base64") !== value) throw new Error("INVALID_AUDIO_PAYLOAD");
+  return data;
+}
+
+
+===== FILE: apps/realtime-server/src/independentCallLegXml.ts =====
+import { buildIndependentCallLegUrls } from "./independentCallLegUrls.js";
+export type IndependentLegRole = "customer" | "staff";
+
+export interface IndependentLegXmlInput {
+  role: IndependentLegRole;
+  publicBaseUrl: string;
+  sessionId: string;
+  connectionToken: string;
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+/**
+ * Generates independent Plivo media-stream XML.
+ *
+ * IMPORTANT:
+ * - Does not bridge customer and staff directly.
+ * - Does not activate live translation.
+ * - Does not establish that audio isolation is verified.
+ * - Must not be deployed without Plivo media validation.
+ */
+export function buildIndependentCallLegXml(
+  input: IndependentLegXmlInput
+): string {
+  const base = new URL(input.publicBaseUrl);
+
+  if (
+    base.protocol !== "https:" ||
+    base.username ||
+    base.password ||
+    base.hash ||
+    base.search
+  ) {
+    throw new Error("Invalid public base URL");
+  }
+
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(input.sessionId)) {
+    throw new Error("Invalid session ID");
+  }
+
+  if (input.role !== "customer" && input.role !== "staff") {
+    throw new Error("Invalid call-leg role");
+  }
+
+  const streamUrl = new URL(
+    "/plivo/independent/stream",
+    base
+  );
+
+  streamUrl.protocol = "wss:";
+  streamUrl.searchParams.set("sessionId", input.sessionId);
+  streamUrl.searchParams.set("role", input.role);
+  if (!/^[A-Za-z0-9_-]{43}$/.test(input.connectionToken)) throw new Error("Invalid connection token");
+  streamUrl.searchParams.set("connectionToken", input.connectionToken);
+  const urls = buildIndependentCallLegUrls(input.publicBaseUrl, input.sessionId, input.role);
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    "<Response>",
+    `  <Stream bidirectional="true" keepCallAlive="true" audioTrack="inbound" contentType="audio/x-mulaw;rate=8000" statusCallbackUrl="${escapeXml(urls.streamStatusUrl)}" statusCallbackMethod="POST">${escapeXml(streamUrl.toString())}</Stream>`,
+    "  <Hangup/>",
+    "</Response>",
+  ].join("\n");
+}
+
+
+===== FILE: apps/realtime-server/src/independentCallSessionEngine.ts =====
+import { randomUUID } from "node:crypto";
+
+export type CallLegRole = "customer" | "staff";
+
+export type CallLegState = {
+  role: CallLegRole;
+  callUuid: string | null;
+  streamId: string | null;
+  connected: boolean;
+};
+
+export type IndependentCallSession = {
+  sessionId: string;
+  customer: CallLegState;
+  staff: CallLegState;
+  closed: boolean;
+  translationEnabled: false;
+};
+
+export class IndependentCallSessionEngine {
+  private readonly sessions =
+    new Map<string, IndependentCallSession>();
+
+  private readonly callOwners = new Map<string, string>();
+  private readonly streamOwners = new Map<string, string>();
+
+  createSession(): IndependentCallSession {
+    const sessionId = randomUUID();
+
+    const session: IndependentCallSession = {
+      sessionId,
+      customer: {
+        role: "customer",
+        callUuid: null,
+        streamId: null,
+        connected: false,
+      },
+      staff: {
+        role: "staff",
+        callUuid: null,
+        streamId: null,
+        connected: false,
+      },
+      closed: false,
+      translationEnabled: false,
+    };
+
+    this.sessions.set(sessionId, session);
+    return this.snapshot(session);
+  }
+
+  getSession(sessionId: string):
+    IndependentCallSession | undefined {
+    const session = this.sessions.get(sessionId);
+    return session ? this.snapshot(session) : undefined;
+  }
+
+  attachCall(
+    sessionId: string,
+    role: CallLegRole,
+    callUuid: string
+  ): IndependentCallSession {
+    const session = this.requireOpen(sessionId);
+    const leg = session[role];
+
+    if (!callUuid.trim()) {
+      throw new Error("Missing call UUID");
+    }
+
+    const owner = this.callOwners.get(callUuid);
+
+    if (owner && owner !== `${sessionId}:${role}`) {
+      throw new Error("Call UUID belongs to another leg");
+    }
+
+    if (leg.callUuid && leg.callUuid !== callUuid) {
+      throw new Error("Call leg already has a different UUID");
+    }
+
+    leg.callUuid = callUuid;
+    leg.connected = true;
+    this.callOwners.set(callUuid, `${sessionId}:${role}`);
+
+    return this.snapshot(session);
+  }
+
+  attachStream(
+    sessionId: string,
+    role: CallLegRole,
+    callUuid: string,
+    streamId: string
+  ): IndependentCallSession {
+    const session = this.requireOpen(sessionId);
+    const leg = session[role];
+
+    if (
+      !streamId.trim() ||
+      !leg.connected ||
+      leg.callUuid !== callUuid
+    ) {
+      throw new Error("Invalid stream attachment");
+    }
+
+    const owner = this.streamOwners.get(streamId);
+
+    if (owner && owner !== `${sessionId}:${role}`) {
+      throw new Error("Stream belongs to another leg");
+    }
+
+    if (leg.streamId && leg.streamId !== streamId) {
+      throw new Error("Call leg already has another stream");
+    }
+
+    leg.streamId = streamId;
+    this.streamOwners.set(streamId, `${sessionId}:${role}`);
+
+    return this.snapshot(session);
+  }
+
+  detachStream(
+    sessionId: string,
+    role: CallLegRole,
+    streamId: string
+  ): boolean {
+    const session = this.sessions.get(sessionId);
+
+    if (!session || session.closed) return false;
+
+    const leg = session[role];
+
+    if (leg.streamId !== streamId) return false;
+
+    leg.streamId = null;
+    this.streamOwners.delete(streamId);
+
+    return true;
+  }
+
+  closeSession(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+
+    if (!session || session.closed) return false;
+
+    for (const role of ["customer", "staff"] as const) {
+      const leg = session[role];
+
+      if (leg.callUuid) {
+        this.callOwners.delete(leg.callUuid);
+      }
+
+      if (leg.streamId) {
+        this.streamOwners.delete(leg.streamId);
+      }
+
+      leg.connected = false;
+      leg.streamId = null;
+    }
+
+    session.closed = true;
+    return true;
+  }
+
+  enableTranslation(): never {
+    throw new Error(
+      "Live translation blocked: Plivo audio isolation unverified"
+    );
+  }
+
+  removeClosedSession(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session?.closed) return false;
+    return this.sessions.delete(sessionId);
+  }
+
+  private requireOpen(
+    sessionId: string
+  ): IndependentCallSession {
+    const session = this.sessions.get(sessionId);
+
+    if (!session || session.closed) {
+      throw new Error("Unknown or closed call session");
+    }
+
+    return session;
+  }
+
+  private snapshot(
+    session: IndependentCallSession
+  ): IndependentCallSession {
+    return {
+      ...session,
+      customer: { ...session.customer },
+      staff: { ...session.staff },
+    };
+  }
+}
+
+
+===== FILE: apps/realtime-server/src/independentCallIntegration.test.ts =====
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import Fastify from "fastify";
+import formbody from "@fastify/formbody";
+import websocket from "@fastify/websocket";
+import type { WebSocket } from "ws";
+import { describe, expect, it, vi } from "vitest";
+import { registerIndependentCallFeature } from "./independentCallFeature.js";
+import { OfflineIndependentCallProvider, PlivoIndependentCallProvider } from "./independentCallProvider.js";
+import { IndependentLiveCallManager } from "./independentLiveCallManager.js";
+import { createIndependentPlivoCall } from "./independentPlivoCallCreator.js";
+import { offlineHeaders } from "./testSupport/plivoOfflineSignature.js";
+import { ScriptedSarvamMock } from "./sarvamPipelineAdapters.js";
+import { encodeMulaw } from "./telephonyAudioCodec.js";
+
+const env = {
+  NUNES_INDEPENDENT_CALLS_ENABLED: "true", NUNES_INDEPENDENT_CALLS_TEST_MODE: "true",
+  PUBLIC_BASE_URL: "https://offline.example", PLIVO_AUTH_TOKEN: "offline-webhook-token", PLIVO_NUMBER: "+919876543210", NUNES_ADMIN_PASSWORD: "offline-admin",
+};
+const admin = { authorization: "Bearer offline-admin" };
+const numbers = { customerNumber: "+919876543211", staffNumber: "+919876543212" };
+const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+async function eventually(check: () => boolean) {
+  for (let i = 0; i < 100; i++) {
+    if (check()) return;
+    await new Promise(resolve => setTimeout(resolve, 2));
+  }
+  expect(check()).toBe(true);
+}
+async function setup(overrides: Partial<typeof env> & { NUNES_OFFLINE_TRANSLATION_ENABLED?: string } = {}, provider = new OfflineIndependentCallProvider(), now?: () => number, manager?: IndependentLiveCallManager, offlineTranslationProviders?: ScriptedSarvamMock) {
+  const app = Fastify();
+  await app.register(formbody);
+  await app.register(websocket, { options: { maxPayload: 65_536 } });
+  // Regression sentinel: independent registration leaves the legacy route available.
+  app.all("/plivo/inbound", async () => '<Response><Dial><Number>legacy</Number></Dial></Response>');
+  const service = await registerIndependentCallFeature(app, { env: { ...env, ...overrides }, provider, now, manager, offlineTranslationProviders });
+  await app.ready();
+  const clients: WebSocket[] = [];
+  return { app, service: service!, provider, clients,
+    async cleanup() { for (const client of clients) client.terminate(); await app.close(); },
+  };
+}
+type Fixture = Awaited<ReturnType<typeof setup>>;
+async function create(fixture: Fixture) {
+  const response = await fixture.app.inject({ method: "POST", url: "/internal/independent-calls", headers: admin, payload: numbers });
+  expect(response.statusCode).toBe(201);
+  return response.json<{ sessionId: string }>().sessionId;
+}
+function leg(fixture: Fixture, sessionId: string, role: "customer" | "staff") {
+  return fixture.provider.created.find(item => item.sessionId === sessionId && item.role === role)!;
+}
+async function callback(fixture: Fixture, target: string, params: Record<string, string>, nonce?: string) {
+  const url = new URL(target);
+  return fixture.app.inject({ method: "POST", url: url.pathname + url.search,
+    headers: { ...offlineHeaders("POST", target, params, env.PLIVO_AUTH_TOKEN, nonce), "content-type": "application/x-www-form-urlencoded" },
+    payload: new URLSearchParams(params).toString(),
+  });
+}
+async function answer(fixture: Fixture, sessionId: string, role: "customer" | "staff", callUuid: string = randomUUID()) {
+  const created = leg(fixture, sessionId, role);
+  const params = { CallUUID: callUuid, RequestUUID: created.requestUuid, Event: "StartApp", Direction: "outbound", CallStatus: "in-progress" };
+  const response = await callback(fixture, created.answerUrl, params);
+  expect(response.statusCode).toBe(200);
+  expect(response.headers["content-type"]).toContain("application/xml");
+  expect(response.body).not.toMatch(/<Dial|<Conference|<Speak|<Play/);
+  const streamUrl = new URL(response.body.match(/>(wss:\/\/[^<]+)<\/Stream>/)![1].replaceAll("&amp;", "&"));
+  const statusUrl = response.body.match(/statusCallbackUrl="([^"]+)"/)![1].replaceAll("&amp;", "&");
+  return { callUuid, params, streamUrl, statusUrl, streamId: randomUUID() };
+}
+type Answer = Awaited<ReturnType<typeof answer>>;
+async function started(fixture: Fixture, answered: Answer, event = "started", nonce?: string) {
+  return callback(fixture, answered.statusUrl, { CallUUID: answered.callUuid, StreamID: answered.streamId, Event: event }, nonce);
+}
+async function connect(fixture: Fixture, answered: Answer, nonce?: string) {
+  const url = new URL(answered.streamUrl);
+  url.protocol = "https:";
+  const client = await fixture.app.injectWS(url.pathname + url.search, { headers: offlineHeaders("GET", url.toString(), {}, env.PLIVO_AUTH_TOKEN, nonce) });
+  fixture.clients.push(client);
+  return client;
+}
+function startMessage(answered: Answer) {
+  return { event: "start", sequenceNumber: 1, start: { callId: answered.callUuid, streamId: answered.streamId, tracks: ["inbound"], mediaFormat: { encoding: "audio/x-mulaw", sampleRate: 8000 } } };
+}
+function mediaMessage(answered: Answer, sequenceNumber = 2) {
+  return { event: "media", sequenceNumber, streamId: answered.streamId, media: { track: "inbound", payload: Buffer.alloc(160, 0xff).toString("base64") } };
+}
+
+describe("Independent two-leg Fastify integration (offline provider only)", () => {
+  it("processes signed owned media into mock opposite-leg queues without sending playback", async () => {
+    const mock = new ScriptedSarvamMock(); mock.transcripts.push({ text: "mujhe Fluke 754 chahiye", language: "hi-IN", confidence: .99, final: true });
+    const fixture = await setup({ NUNES_OFFLINE_TRANSLATION_ENABLED: "true" }, undefined, undefined, undefined, mock);
+    try {
+      const sessionId = await create(fixture), customer = await answer(fixture, sessionId, "customer"), staff = await answer(fixture, sessionId, "staff");
+      await started(fixture, customer); await started(fixture, staff);
+      const customerSocket = await connect(fixture, customer), staffSocket = await connect(fixture, staff), received = vi.fn();
+      customerSocket.on("message", received); staffSocket.on("message", received);
+      customerSocket.send(JSON.stringify(startMessage(customer))); staffSocket.send(JSON.stringify(startMessage(staff)));
+      await eventually(() => fixture.service.describe(sessionId).customer.socketConnected && fixture.service.describe(sessionId).staff.socketConnected);
+      const speech = encodeMulaw(Int16Array.from({ length: 1600 }, (_, index) => Math.round(5000 * Math.sin(index * .2))));
+      customerSocket.send(JSON.stringify({ ...mediaMessage(customer, 2), media: { track: "inbound", payload: speech.toString("base64") } }));
+      customerSocket.send(JSON.stringify({ ...mediaMessage(customer, 3), media: { track: "inbound", payload: Buffer.alloc(2400, 255).toString("base64") } }));
+      await eventually(() => fixture.service.describe(sessionId).offlineTranslation?.metrics.prepared === 1);
+      expect(fixture.service.describe(sessionId).offlineTranslation?.queued.customerToStaff).toBe(1);
+      expect(received).not.toHaveBeenCalled(); expect(mock.calls).toEqual({ stt: 1, translation: 1, tts: 1 });
+      await fixture.service.close(sessionId, "offline-test");
+      expect(fixture.service.describe(sessionId).offlineTranslation?.queued.customerToStaff).toBe(0);
+    } finally { await fixture.cleanup(); }
+  });
+  it("creates distinct requests, answers both legs, connects streams and receives isolated media without sending audio", async () => {
+    const fixture = await setup();
+    try {
+      const sessionId = await create(fixture);
+      expect(fixture.provider.created).toHaveLength(2);
+      expect(leg(fixture, sessionId, "customer").requestUuid).not.toBe(leg(fixture, sessionId, "staff").requestUuid);
+      const customer = await answer(fixture, sessionId, "customer");
+      const staff = await answer(fixture, sessionId, "staff");
+      expect(customer.callUuid).not.toBe(leg(fixture, sessionId, "customer").requestUuid);
+      expect((await started(fixture, customer)).statusCode).toBe(200);
+      expect((await started(fixture, staff)).statusCode).toBe(200);
+      const customerSocket = await connect(fixture, customer);
+      const staffSocket = await connect(fixture, staff);
+      const received = vi.fn();
+      customerSocket.on("message", received); staffSocket.on("message", received);
+      customerSocket.send(JSON.stringify(startMessage(customer)));
+      staffSocket.send(JSON.stringify(startMessage(staff)));
+      await eventually(() => fixture.service.describe(sessionId).customer.socketConnected && fixture.service.describe(sessionId).staff.socketConnected);
+      customerSocket.send(JSON.stringify(mediaMessage(customer)));
+      staffSocket.send(JSON.stringify(mediaMessage(staff)));
+      await eventually(() => fixture.service.describe(sessionId).customer.frames === 1 && fixture.service.describe(sessionId).staff.frames === 1);
+      const state = fixture.service.describe(sessionId);
+      expect(state.state).toBe("connected");
+      expect(state.customer.bytes).toBe(160); expect(state.staff.bytes).toBe(160);
+      expect(state.audioIsolationVerified).toBe(false); expect(state.translationEnabled).toBe(false);
+      expect(received).not.toHaveBeenCalled();
+      expect(() => fixture.service.forwardAudio()).toThrow("AUDIO_ISOLATION_UNVERIFIED");
+      expect(() => fixture.service.enableTranslation()).toThrow("AUDIO_ISOLATION_UNVERIFIED");
+      expect((await fixture.app.inject({ url: "/plivo/inbound" })).body).toContain("<Dial>");
+    } finally { await fixture.cleanup(); }
+  });
+
+  for (const role of ["customer", "staff"] as const) {
+    it(`cleans up both legs when ${role} hangs up, including duplicate delivery`, async () => {
+      const fixture = await setup();
+      try {
+        const sessionId = await create(fixture);
+        const customer = await answer(fixture, sessionId, "customer");
+        const staff = await answer(fixture, sessionId, "staff");
+        await started(fixture, customer); await started(fixture, staff);
+        const client = await connect(fixture, customer);
+        client.send(JSON.stringify(startMessage(customer)));
+        await tick();
+        const selected = role === "customer" ? customer : staff;
+        const params = { CallUUID: selected.callUuid, RequestUUID: leg(fixture, sessionId, role).requestUuid, Event: "Hangup", CallStatus: "completed" };
+        const target = leg(fixture, sessionId, role).hangupUrl;
+        expect((await callback(fixture, target, params, "hangup-nonce")).statusCode).toBe(200);
+        expect((await callback(fixture, target, params, "hangup-nonce")).statusCode).toBe(200);
+        expect((await callback(fixture, target, params)).statusCode).toBe(200);
+        expect(fixture.provider.stopped).toHaveLength(2);
+        expect(fixture.service.describe(sessionId).state).toBe("closed");
+        expect(fixture.service.socketCount).toBe(0);
+      } finally { await fixture.cleanup(); }
+    });
+  }
+  it("cleans up the successful customer request when staff creation fails", async () => {
+    const provider = new OfflineIndependentCallProvider(); provider.failRole = "staff";
+    const fixture = await setup({}, provider);
+    try {
+      const response = await fixture.app.inject({ method: "POST", url: "/internal/independent-calls", headers: admin, payload: numbers });
+      expect(response.statusCode).toBe(502);
+      expect(provider.created).toHaveLength(1); expect(provider.stopped).toHaveLength(1);
+      expect(fixture.service.manager.allRecords()[0].state).toBe("closed");
+    } finally { await fixture.cleanup(); }
+  });
+  it("handles unanswered failure/hangup using request UUID ownership", async () => {
+    const fixture = await setup();
+    try {
+      const sessionId = await create(fixture);
+      const created = leg(fixture, sessionId, "staff");
+      const response = await callback(fixture, created.hangupUrl, { RequestUUID: created.requestUuid, CallUUID: randomUUID(), CallStatus: "failed", Event: "Hangup" });
+      expect(response.statusCode).toBe(200);
+      expect(fixture.service.describe(sessionId).state).toBe("closed");
+      expect(fixture.provider.stopped).toHaveLength(2);
+    } finally { await fixture.cleanup(); }
+  });
+  it("makes answer retries idempotent and refuses request UUID mismatch or request-as-call confusion", async () => {
+    const fixture = await setup();
+    try {
+      const sessionId = await create(fixture);
+      const created = leg(fixture, sessionId, "customer");
+      expect((await callback(fixture, created.answerUrl, { CallUUID: "unbound-call", RequestUUID: "forged-request" })).statusCode).toBe(403);
+      expect(fixture.service.manager.getSession(sessionId)?.customer.callUuid).toBeNull();
+      const customer = await answer(fixture, sessionId, "customer");
+      const first = await callback(fixture, created.answerUrl, customer.params, "answer-retry");
+      const duplicate = await callback(fixture, created.answerUrl, customer.params, "answer-retry");
+      expect(first.statusCode).toBe(200); expect(duplicate.body).toBe(first.body);
+      expect((await callback(fixture, created.answerUrl, { ...customer.params, CallUUID: created.requestUuid })).statusCode).toBe(403);
+      expect((await callback(fixture, created.answerUrl, { ...customer.params, ALegRequestUUID: "different" })).statusCode).toBe(403);
+    } finally { await fixture.cleanup(); }
+  });
+  it("rejects forged signatures and signed cross-session/cross-leg request claims", async () => {
+    const fixture = await setup();
+    try {
+      const first = await create(fixture); const second = await create(fixture);
+      const source = leg(fixture, first, "customer");
+      const params = { CallUUID: "spoofed-call", RequestUUID: source.requestUuid };
+      const target = new URL(source.answerUrl);
+      const unsigned = await fixture.app.inject({ method: "POST", url: target.pathname + target.search, payload: params });
+      expect(unsigned.statusCode).toBe(403);
+      expect((await callback(fixture, leg(fixture, second, "customer").answerUrl, params)).statusCode).toBe(403);
+      expect((await callback(fixture, leg(fixture, first, "staff").answerUrl, params)).statusCode).toBe(403);
+      expect(fixture.service.manager.getSession(second)?.customer.callUuid).toBeNull();
+    } finally { await fixture.cleanup(); }
+  });
+  it("rejects altered/reordered replay identities but permits exact callback retry without mutation", async () => {
+    const fixture = await setup();
+    try {
+      const sessionId = await create(fixture);
+      const created = leg(fixture, sessionId, "customer");
+      const params = { CallUUID: "owned-call", RequestUUID: created.requestUuid };
+      expect((await callback(fixture, created.answerUrl, params, "same-nonce")).statusCode).toBe(200);
+      expect((await callback(fixture, created.answerUrl, { ...params, CallUUID: "other" }, "same-nonce")).statusCode).toBe(403);
+      const url = new URL(created.answerUrl);
+      url.search = `role=customer&sessionId=${sessionId}`;
+      // Query order is canonicalized in both signature verification and replay identity.
+      expect((await callback(fixture, url.toString(), params, "same-nonce")).statusCode).toBe(200);
+      expect(fixture.service.manager.getSession(sessionId)?.customer.callUuid).toBe("owned-call");
+    } finally { await fixture.cleanup(); }
+  });
+  it("rejects stream status claiming another session's active stream", async () => {
+    const fixture = await setup();
+    try {
+      const first = await create(fixture); const second = await create(fixture);
+      const a = await answer(fixture, first, "customer"); const b = await answer(fixture, second, "customer");
+      expect((await started(fixture, a)).statusCode).toBe(200);
+      b.streamId = a.streamId;
+      expect((await started(fixture, b)).statusCode).toBe(403);
+      expect(fixture.service.manager.getSession(second)?.customer.streamId).toBeNull();
+    } finally { await fixture.cleanup(); }
+  });
+  it("holds media until signed HTTP stream registration arrives", async () => {
+    const fixture = await setup();
+    try {
+      const sessionId = await create(fixture); const customer = await answer(fixture, sessionId, "customer");
+      const client = await connect(fixture, customer);
+      client.send(JSON.stringify(startMessage(customer))); client.send(JSON.stringify(mediaMessage(customer)));
+      await tick(); await tick();
+      expect(fixture.service.describe(sessionId).customer.frames).toBe(0);
+      expect((await started(fixture, customer)).statusCode).toBe(200);
+      client.send(JSON.stringify(mediaMessage(customer, 3)));
+      await eventually(() => fixture.service.describe(sessionId).customer.frames === 1);
+    } finally { await fixture.cleanup(); }
+  });
+  it("rejects unsigned/invalid-token upgrades and duplicate socket owners", async () => {
+    const fixture = await setup();
+    try {
+      const sessionId = await create(fixture); const customer = await answer(fixture, sessionId, "customer");
+      const target = customer.streamUrl.pathname + customer.streamUrl.search;
+      await expect(fixture.app.injectWS(target)).rejects.toThrow("403");
+      const bad = new URL(customer.streamUrl); bad.searchParams.set("connectionToken", "forged"); bad.protocol = "https:";
+      await expect(fixture.app.injectWS(bad.pathname + bad.search, { headers: offlineHeaders("GET", bad.toString(), {}, env.PLIVO_AUTH_TOKEN) })).rejects.toThrow("403");
+      const owner = await connect(fixture, customer); owner.send(JSON.stringify(startMessage(customer)));
+      await expect(connect(fixture, customer)).rejects.toThrow("403");
+      expect(fixture.service.socketCount).toBe(1);
+    } finally { await fixture.cleanup(); }
+  });
+  it("rejects mismatched start call/stream IDs before accepting media", async () => {
+    const fixture = await setup();
+    try {
+      const sessionId = await create(fixture); const customer = await answer(fixture, sessionId, "customer");
+      await started(fixture, customer);
+      const client = await connect(fixture, customer);
+      const close = once(client, "close");
+      const message = startMessage(customer); message.start.callId = "wrong-call";
+      client.send(JSON.stringify(message));
+      expect((await close)[0]).toBe(1008);
+      expect(fixture.service.describe(sessionId).customer.frames).toBe(0);
+    } finally { await fixture.cleanup(); }
+  });
+  it("reconnects with fresh authentication and protects against upgrade replay and stale disconnects", async () => {
+    const fixture = await setup();
+    try {
+      const sessionId = await create(fixture); const customer = await answer(fixture, sessionId, "customer");
+      await started(fixture, customer);
+      const first = await connect(fixture, customer, "first-upgrade"); first.send(JSON.stringify(startMessage(customer)));
+      await eventually(() => fixture.service.describe(sessionId).customer.socketConnected);
+      const closed = once(first, "close"); first.close(); await closed;
+      await eventually(() => fixture.service.socketCount === 0);
+      await expect(connect(fixture, customer, "first-upgrade")).rejects.toThrow("403");
+      const replacement = await connect(fixture, customer); replacement.send(JSON.stringify(startMessage(customer)));
+      await eventually(() => fixture.service.describe(sessionId).customer.socketConnected);
+      expect(fixture.service.disconnectSocket(sessionId, "customer", first)).toBe(false);
+      replacement.send(JSON.stringify(mediaMessage(customer)));
+      await eventually(() => fixture.service.describe(sessionId).customer.frames === 1);
+    } finally { await fixture.cleanup(); }
+  });
+  it("retires stopped streams, allows a new generation and ignores stale stop on the replacement", async () => {
+    const fixture = await setup();
+    try {
+      const sessionId = await create(fixture); const customer = await answer(fixture, sessionId, "customer");
+      await started(fixture, customer);
+      expect((await started(fixture, customer, "stopped")).statusCode).toBe(200);
+      expect((await started(fixture, customer)).statusCode).toBe(403);
+      const replacement = { ...customer, streamId: randomUUID() };
+      expect((await started(fixture, replacement)).statusCode).toBe(200);
+      expect((await started(fixture, customer, "stopped")).statusCode).toBe(200);
+      expect(fixture.service.manager.getSession(sessionId)?.customer.streamId).toBe(replacement.streamId);
+    } finally { await fixture.cleanup(); }
+  });
+  it("cleans both legs on signed stream failure", async () => {
+    const fixture = await setup();
+    try {
+      const sessionId = await create(fixture); const customer = await answer(fixture, sessionId, "customer");
+      await started(fixture, customer);
+      expect((await started(fixture, customer, "failed")).statusCode).toBe(200);
+      expect(fixture.service.describe(sessionId).closeReason).toBe("stream-failure");
+      expect(fixture.provider.stopped).toHaveLength(2);
+    } finally { await fixture.cleanup(); }
+  });
+  it("never assigns the same socket object to customer and staff", async () => {
+    const fixture = await setup();
+    try {
+      const sessionId = await create(fixture);
+      const customer = await answer(fixture, sessionId, "customer");
+      const staff = await answer(fixture, sessionId, "staff");
+      const socket = { close: vi.fn(), readyState: 1 };
+      fixture.service.openSocket(sessionId, "customer", customer.streamUrl.searchParams.get("connectionToken")!, socket);
+      expect(() => fixture.service.openSocket(sessionId, "staff", staff.streamUrl.searchParams.get("connectionToken")!, socket)).toThrow("SOCKET_ALREADY_OWNED");
+      expect(fixture.service.socketCount).toBe(1);
+    } finally { await fixture.cleanup(); }
+  });
+  it("cleans up a stream that fails before its first started callback", async () => {
+    const fixture = await setup();
+    try {
+      const sessionId = await create(fixture); const customer = await answer(fixture, sessionId, "customer");
+      expect((await started(fixture, customer, "failed")).statusCode).toBe(200);
+      expect(fixture.service.describe(sessionId).state).toBe("closed");
+      expect(fixture.provider.stopped).toHaveLength(2);
+    } finally { await fixture.cleanup(); }
+  });
+  it("rejects duplicate query/form parameters and unknown provider events", async () => {
+    const fixture = await setup();
+    try {
+      const sessionId = await create(fixture); const customer = await answer(fixture, sessionId, "customer");
+      expect((await started(fixture, customer, "unrecognized")).statusCode).toBe(403);
+      const duplicate = new URL(leg(fixture, sessionId, "customer").answerUrl); duplicate.searchParams.append("role", "customer");
+      expect((await callback(fixture, duplicate.toString(), customer.params)).statusCode).toBe(403);
+      const url = new URL(leg(fixture, sessionId, "customer").answerUrl);
+      expect((await fixture.app.inject({ method: "POST", url: url.pathname + url.search,
+        headers: { ...offlineHeaders("POST", url.toString(), customer.params, env.PLIVO_AUTH_TOKEN), "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams(customer.params).toString() + "&CallUUID=spoofed",
+      })).statusCode).toBe(403);
+      expect(fixture.service.manager.getSession(sessionId)?.customer.streamId).toBeNull();
+    } finally { await fixture.cleanup(); }
+  });
+  it("does not reset sequence protection on duplicate started callback", async () => {
+    const fixture = await setup();
+    try {
+      const sessionId = await create(fixture); const customer = await answer(fixture, sessionId, "customer");
+      await started(fixture, customer);
+      const client = await connect(fixture, customer); client.send(JSON.stringify(startMessage(customer)));
+      await eventually(() => fixture.service.describe(sessionId).customer.socketConnected);
+      client.send(JSON.stringify(mediaMessage(customer, 10)));
+      await eventually(() => fixture.service.describe(sessionId).customer.frames === 1);
+      expect((await started(fixture, customer)).statusCode).toBe(200);
+      const closed = once(client, "close");
+      client.send(JSON.stringify(mediaMessage(customer, 10)));
+      expect((await closed)[0]).toBe(1008);
+      expect(fixture.service.describe(sessionId).customer.frames).toBe(1);
+    } finally { await fixture.cleanup(); }
+  });
+  it("closes disconnected or orphaned sessions and releases closed sessions/replay state after retention", async () => {
+    let now = 1000;
+    const fixture = await setup({}, undefined, () => now);
+    try {
+      const sessionId = await create(fixture); const customer = await answer(fixture, sessionId, "customer");
+      await started(fixture, customer);
+      const client = await connect(fixture, customer); client.send(JSON.stringify(startMessage(customer)));
+      await eventually(() => fixture.service.describe(sessionId).customer.socketConnected);
+      const closed = once(client, "close"); client.close(); await closed;
+      await eventually(() => fixture.service.socketCount === 0);
+      now += 30_001; await fixture.service.sweep();
+      expect(fixture.service.describe(sessionId).closeReason).toBe("reconnect-timeout");
+      now += 60_001; await fixture.service.sweep();
+      expect(fixture.service.sessionCount).toBe(0); expect(fixture.service.replay.size).toBe(0);
+      expect(fixture.service.manager.getSession(sessionId)).toBeUndefined();
+      expect((await started(fixture, customer)).statusCode).toBe(403);
+      const orphan = await create(fixture);
+      now += 30 * 60_000 + 1; await fixture.service.sweep();
+      expect(fixture.service.describe(orphan).closeReason).toBe("session-timeout");
+    } finally { await fixture.cleanup(); }
+  });
+  it("closes upgrades whose provider start/HTTP status never arrives", async () => {
+    let now = 1000;
+    const fixture = await setup({}, undefined, () => now);
+    try {
+      const sessionId = await create(fixture); const customer = await answer(fixture, sessionId, "customer");
+      await connect(fixture, customer);
+      now += 10_001; await fixture.service.sweep();
+      expect(fixture.service.describe(sessionId).closeReason).toBe("stream-start-timeout");
+    } finally { await fixture.cleanup(); }
+  });
+  it("retains failed-cleanup state and retries rather than claiming successful removal", async () => {
+    let now = 1000;
+    const provider = new OfflineIndependentCallProvider();
+    const fixture = await setup({}, provider, () => now);
+    try {
+      const sessionId = await create(fixture); provider.failCleanup = true;
+      await fixture.service.close(sessionId, "test-close");
+      expect(fixture.service.describe(sessionId).cleanupPending).toBe(true);
+      now += 60_001; await fixture.service.sweep();
+      expect(fixture.service.sessionCount).toBe(1);
+      provider.failCleanup = false; await fixture.service.sweep();
+      expect(fixture.service.sessionCount).toBe(0);
+    } finally { await fixture.cleanup(); }
+  });
+  it("exposes no independent endpoints when disabled", async () => {
+    const fixture = await setup({ NUNES_INDEPENDENT_CALLS_ENABLED: "false" });
+    try {
+      expect(fixture.service).toBeUndefined();
+      for (const url of ["/internal/independent-calls", "/plivo/independent/answered", "/plivo/independent/stream-status"]) {
+        expect((await fixture.app.inject({ method: "POST", url, headers: admin, payload: numbers })).statusCode).toBe(404);
+      }
+      await expect(fixture.app.injectWS("/plivo/independent/stream")).rejects.toThrow("404");
+      expect(fixture.provider.created).toHaveLength(0);
+      expect((await fixture.app.inject({ url: "/plivo/inbound" })).statusCode).toBe(200);
+    } finally { await fixture.cleanup(); }
+  });
+  it("requires admin authorization and explicit offline mode for creation", async () => {
+    const fixture = await setup({ NUNES_INDEPENDENT_CALLS_TEST_MODE: "false" });
+    try {
+      for (const headers of [{}, { authorization: "Bearer wrong" }]) {
+        expect((await fixture.app.inject({ method: "POST", url: "/internal/independent-calls", headers, payload: numbers })).statusCode).toBe(401);
+      }
+      expect((await fixture.app.inject({ method: "POST", url: "/internal/independent-calls", headers: admin, payload: numbers })).statusCode).toBe(403);
+      expect(fixture.provider.created).toHaveLength(0);
+    } finally { await fixture.cleanup(); }
+  });
+  it("blocks direct live adapter and raw SDK call creation before a client can be constructed", async () => {
+    const provider = new PlivoIndependentCallProvider({ authId: "unused", authToken: "unused" });
+    await expect(provider.createLeg({ sessionId: "test", role: "customer", from: numbers.customerNumber, to: numbers.staffNumber, answerUrl: "https://offline.example/answer", hangupUrl: "https://offline.example/hangup" })).rejects.toThrow("LIVE_CALL_APPROVAL_REQUIRED");
+    await expect(createIndependentPlivoCall({ authId: "unused", authToken: "unused", from: numbers.customerNumber, to: numbers.staffNumber, answerUrl: "https://offline.example/answer" })).rejects.toThrow("LIVE_CALL_APPROVAL_REQUIRED");
+    await expect(provider.stopLeg({ requestUuid: "unused-request", callUuid: null })).rejects.toThrow("LIVE_CALL_APPROVAL_REQUIRED");
+  });
+  it("defaults to disabled without a flag and fails closed when admin authentication is missing", async () => {
+    const disabled = await setup({ NUNES_INDEPENDENT_CALLS_ENABLED: undefined, PUBLIC_BASE_URL: "", PLIVO_AUTH_TOKEN: "" });
+    try {
+      expect(disabled.service).toBeUndefined();
+      expect((await disabled.app.inject({ method: "POST", url: "/internal/independent-calls", headers: admin, payload: numbers })).statusCode).toBe(404);
+    } finally { await disabled.cleanup(); }
+    const unavailable = await setup({ NUNES_ADMIN_PASSWORD: "" });
+    try {
+      expect((await unavailable.app.inject({ method: "POST", url: "/internal/independent-calls", headers: admin, payload: numbers })).statusCode).toBe(503);
+      expect(unavailable.provider.created).toHaveLength(0);
+    } finally { await unavailable.cleanup(); }
+  });
+  it("rejects bounded-capacity overflow and leaves the existing session intact", async () => {
+    const fixture = await setup({}, undefined, undefined, new IndependentLiveCallManager(1));
+    try {
+      const first = await create(fixture);
+      expect((await fixture.app.inject({ method: "POST", url: "/internal/independent-calls", headers: admin, payload: numbers })).statusCode).toBe(503);
+      expect(fixture.service.describe(first).state).toBe("pending");
+      expect(fixture.provider.created).toHaveLength(2);
+    } finally { await fixture.cleanup(); }
+  });
+});
+
+
+===== FILE: packages/translation/src/index.ts =====
+export type ProtectedEntity = {
+  token: string;
+  original: string;
+};
+
+export type ProtectedText = {
+  text: string;
+  entities: ProtectedEntity[];
+};
+
+const BUSINESS_TERMS = [
+  "pressure calibrator",
+  "temperature calibrator",
+  "process calibrator",
+  "loop calibrator",
+  "dry block calibrator",
+  "Fluke",
+  "GE Druck",
+  "Druck",
+  "GST",
+  "ASTM",
+  "ISO",
+  "WhatsApp"
+];
+
+const TECHNICAL_PATTERNS: RegExp[] = [
+  /₹\s?[\d,]+(?:\.\d+)?/gi,
+  /(?:[$€£]|\b(?:USD|EUR|INR|Rs\.?))\s?[\d,]+(?:\.\d+)?/gi,
+  /\b\d+(?:\.\d+)?\s?%/gi,
+  /\b\d+(?:\.\d+)?\s?-\s?\d+(?:\.\d+)?\s?mA\b/gi,
+  /\b\d+(?:\.\d+)?\s?(?:mA|A|V|mV|kV|Hz|kHz|MHz|bar|psi|Pa|kPa|MPa|°C|mm|cm|m|ml|L|LPH|sccm|Nm)\b/gi,
+
+  // Model / part-number style identifiers.
+  /\b(?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*\d)[A-Z0-9]+(?:[-/][A-Z0-9]+)*\b/g,
+  /\b\d[\d,]*(?:\.\d+)?\b/g
+];
+
+function rangesOverlap(
+  start: number,
+  end: number,
+  ranges: Array<{ start: number; end: number }>
+) {
+  return ranges.some(range => start < range.end && end > range.start);
+}
+
+export function protectEntities(input: string): ProtectedText {
+  const matches: Array<{
+    start: number;
+    end: number;
+    value: string;
+  }> = [];
+
+  // Protect known business terminology first.
+  const sortedTerms = [...BUSINESS_TERMS].sort(
+    (a, b) => b.length - a.length
+  );
+
+  for (const term of sortedTerms) {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(
+      `(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`,
+      "gi"
+    );
+
+    for (const match of input.matchAll(regex)) {
+      if (match.index === undefined) continue;
+
+      matches.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        value: match[0]
+      });
+    }
+  }
+
+  // Then protect prices, percentages, units and model identifiers.
+  for (const regex of TECHNICAL_PATTERNS) {
+    for (const match of input.matchAll(regex)) {
+      if (match.index === undefined) continue;
+
+      const start = match.index;
+      const end = start + match[0].length;
+
+      if (!rangesOverlap(start, end, matches)) {
+        matches.push({
+          start,
+          end,
+          value: match[0]
+        });
+      }
+    }
+  }
+
+  // Keep only non-overlapping longest/earliest matches.
+  matches.sort((a, b) => {
+    if (a.start !== b.start) return a.start - b.start;
+    return (b.end - b.start) - (a.end - a.start);
+  });
+
+  const selected: typeof matches = [];
+
+  for (const match of matches) {
+    if (!rangesOverlap(match.start, match.end, selected)) {
+      selected.push(match);
+    }
+  }
+
+  // Replace from right to left so indexes remain valid.
+  const entities: ProtectedEntity[] = [];
+  let protectedText = input;
+
+  [...selected]
+    .sort((a, b) => b.start - a.start)
+    .forEach((match, reverseIndex) => {
+      const tokenNumber = selected.length - reverseIndex;
+      const token = `NUNESENTITY${tokenNumber}`;
+
+      entities.unshift({
+        token,
+        original: match.value
+      });
+
+      protectedText =
+        protectedText.slice(0, match.start) +
+        token +
+        protectedText.slice(match.end);
+    });
+
+  return {
+    text: protectedText,
+    entities
+  };
+}
+
+export function restoreEntities(
+  translatedText: string,
+  entities: ProtectedEntity[]
+): string {
+  let output = translatedText;
+
+  for (const entity of entities) {
+    const escaped = entity.token.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&"
+    );
+
+    output = output.replace(
+      new RegExp(`${escaped}(?!\\d)`, "gi"),
+      entity.original
+    );
+  }
+
+  return output;
+}
+
+export function verifyEntityIntegrity(
+  restoredText: string,
+  entities: ProtectedEntity[]
+) {
+  const missing = entities
+    .filter(entity => !restoredText.includes(entity.original))
+    .map(entity => entity.original);
+
+  return {
+    valid: missing.length === 0,
+    missing
+  };
+}
+
+
+===== PHASE 5 SAFETY REFERENCES =====
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationContract.test.ts:16: customerPlaybackVerified: true,
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationContract.test.ts:17: staffPlaybackVerified: true,
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationContract.test.ts:27: it("requires both playback directions", () => {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationContract.test.ts:32: customerPlaybackVerified: true,
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationContract.test.ts:33: staffPlaybackVerified: false,
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationContract.test.ts:45: customerPlaybackVerified: true,
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationContract.test.ts:46: staffPlaybackVerified: true,
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationContract.test.ts:58: customerPlaybackVerified: true,
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationContract.test.ts:59: staffPlaybackVerified: true,
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationContract.ts:5: customerPlaybackVerified: boolean;
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationContract.ts:6: staffPlaybackVerified: boolean;
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationContract.ts:23: "customerPlaybackVerified",
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationContract.ts:24: "staffPlaybackVerified",
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationRegression.test.ts:36: it("blocks customer audio playback", () => {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationRegression.test.ts:48: it("blocks staff audio playback", () => {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationRegression.test.ts:72: it("blocks playback after customer disconnect", () => {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationRegression.test.ts:86: it("blocks playback after staff disconnect", () => {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\audioIsolationRegression.test.ts:100: it("blocks playback after session removal", () => {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\crossLegAudioDispatcher.test.ts:6: it("blocks playback while isolation is unverified", () => {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\crossSessionStreamSafety.test.ts:5: const url = "wss://example.test/plivo/stream";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallbackReplay.test.ts:8: method: "POST", callbackUrl, headers: { "x-plivo-signature-v3-nonce": nonce }, params: { CallUUID: "call" },
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallbackReplay.test.ts:52: provider.createLeg = async () => { creates++; return new Promise(resolve => { resolveCreate = resolve; }); };
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallbackReplay.test.ts:67: const provider = { mode: "live" as const, async createLeg() { invoked = true; throw new Error("must not run"); }, async stopLeg() { invoked = true; } };
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallbackReplay.ts:2: import type { PlivoWebhookRequestInput } from "./plivoWebhookRequestGuard.js";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallbackReplay.ts:12: claim(input: PlivoWebhookRequestInput, sessionId: string, upgrade = false): { nonce: string; cached?: CachedResponse } {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallbackReplay.ts:13: const nonceHeaders = Object.entries(input.headers).filter(([key]) => key.toLowerCase() === "x-plivo-signature-v3-nonce");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallCallbackController.ts:22: * callbacks directly. Production routes must verify Plivo
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallFeature.ts:7: import { externalCallbackUrl, callbackParams } from "./plivoCallbackRequest.js";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallFeature.ts:8: import { guardPlivoWebhookRequest } from "./plivoWebhookRequestGuard.js";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallFeature.ts:10: import { ScriptedSarvamMock, type SarvamProviders } from "./sarvamPipelineAdapters.js";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallFeature.ts:15: offlineTranslationProviders?: SarvamProviders;
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallFeature.ts:25: if (!env.PUBLIC_BASE_URL || !env.PLIVO_AUTH_TOKEN || !env.PLIVO_NUMBER) throw new Error("INDEPENDENT_CALL_CONFIGURATION_MISSING");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallFeature.ts:29: fromNumber: env.PLIVO_NUMBER, provider: options.provider ?? new OfflineIndependentCallProvider(), now: options.now,
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallFeature.ts:30: offlineTranslationProviders: env.NUNES_OFFLINE_TRANSLATION_ENABLED === "true" && env.NUNES_INDEPENDENT_CALLS_TEST_MODE === "true" ? options.offlineTranslationProviders ?? new ScriptedSarvamMock() : undefined,
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallFeature.ts:64: await registerIndependentCallRoutes(app, { manager: service.manager, publicBaseUrl: env.PUBLIC_BASE_URL, authToken: env.PLIVO_AUTH_TOKEN, orchestrator: service, store: options.store });
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallFeature.ts:67: app.get("/plivo/independent/stream", {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallFeature.ts:77: method: "GET", callbackUrl: externalCallbackUrl(env.PUBLIC_BASE_URL!, request.url, "/plivo/independent/stream"),
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallFeature.ts:78: headers: request.headers, params: {}, authToken: env.PLIVO_AUTH_TOKEN,
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallFeature.ts:80: if (!guardPlivoWebhookRequest(webhook).allowed) throw new Error("PLIVO_WEBHOOK_UNAUTHORIZED");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:9: import { OfflineIndependentCallProvider, PlivoIndependentCallProvider } from "./independentCallProvider.js";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:11: import { createIndependentPlivoCall } from "./independentPlivoCallCreator.js";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:12: import { offlineHeaders } from "./testSupport/plivoOfflineSignature.js";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:13: import { ScriptedSarvamMock } from "./sarvamPipelineAdapters.js";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:18: PUBLIC_BASE_URL: "https://offline.example", PLIVO_AUTH_TOKEN: "offline-webhook-token", PLIVO_NUMBER: "+919876543210", NUNES_ADMIN_PASSWORD: "offline-admin",
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:30: async function setup(overrides: Partial<typeof env> & { NUNES_OFFLINE_TRANSLATION_ENABLED?: string } = {}, provider = new OfflineIndependentCallProvider(), now?: () => number, manager?: IndependentLiveCallManager, offlineTranslationProviders?: ScriptedSarvamMock) {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:35: app.all("/plivo/inbound", async () => '<Response><Dial><Number>legacy</Number></Dial></Response>');
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:55: headers: { ...offlineHeaders("POST", target, params, env.PLIVO_AUTH_TOKEN, nonce), "content-type": "application/x-www-form-urlencoded" },
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:77: const client = await fixture.app.injectWS(url.pathname + url.search, { headers: offlineHeaders("GET", url.toString(), {}, env.PLIVO_AUTH_TOKEN, nonce) });
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:89: it("processes signed owned media into mock opposite-leg queues without sending playback", async () => {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:90: const mock = new ScriptedSarvamMock(); mock.transcripts.push({ text: "mujhe Fluke 754 chahiye", language: "hi-IN", confidence: .99, final: true });
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:133: expect(state.audioIsolationVerified).toBe(false); expect(state.translationEnabled).toBe(false);
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:137: expect((await fixture.app.inject({ url: "/plivo/inbound" })).body).toContain("<Dial>");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:260: await expect(fixture.app.injectWS(bad.pathname + bad.search, { headers: offlineHeaders("GET", bad.toString(), {}, env.PLIVO_AUTH_TOKEN) })).rejects.toThrow("403");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:349: headers: { ...offlineHeaders("POST", url.toString(), customer.params, env.PLIVO_AUTH_TOKEN), "content-type": "application/x-www-form-urlencoded" },
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:420: for (const url of ["/internal/independent-calls", "/plivo/independent/answered", "/plivo/independent/stream-status"]) {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:423: await expect(fixture.app.injectWS("/plivo/independent/stream")).rejects.toThrow("404");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:425: expect((await fixture.app.inject({ url: "/plivo/inbound" })).statusCode).toBe(200);
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:439: const provider = new PlivoIndependentCallProvider({ authId: "unused", authToken: "unused" });
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:440: await expect(provider.createLeg({ sessionId: "test", role: "customer", from: numbers.customerNumber, to: numbers.staffNumber, answerUrl: "https://offline.example/answer", hangupUrl: "https://offline.example/hangup" })).rejects.toThrow("LIVE_CALL_APPROVAL_REQUIRED");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:441: await expect(createIndependentPlivoCall({ authId: "unused", authToken: "unused", from: numbers.customerNumber, to: numbers.staffNumber, answerUrl: "https://offline.example/answer" })).rejects.toThrow("LIVE_CALL_APPROVAL_REQUIRED");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallIntegration.test.ts:445: const disabled = await setup({ NUNES_INDEPENDENT_CALLS_ENABLED: undefined, PUBLIC_BASE_URL: "", PLIVO_AUTH_TOKEN: "" });
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallLegUrls.ts:44: answerUrl: makeUrl("/plivo/independent/answered"),
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallLegUrls.ts:45: streamStartedUrl: makeUrl("/plivo/independent/stream-started"),
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallLegUrls.ts:46: streamStoppedUrl: makeUrl("/plivo/independent/stream-stopped"),
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallLegUrls.ts:47: completedUrl: makeUrl("/plivo/independent/completed"),
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallLegUrls.ts:48: streamStatusUrl: makeUrl("/plivo/independent/stream-status"),
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallLegXml.ts:21: * Generates independent Plivo media-stream XML.
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallLegXml.ts:27: * - Must not be deployed without Plivo media validation.
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallLegXml.ts:53: "/plivo/independent/stream",
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallOrchestrator.ts:9: import type { SarvamProviders } from "./sarvamPipelineAdapters.js";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallOrchestrator.ts:32: offlineTranslationProviders?: SarvamProviders;
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallOrchestrator.ts:48: readonly audioIsolationVerified = false as const;
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallOrchestrator.ts:62: if (options.offlineTranslationProviders && options.offlineTranslationProviders.mode !== "mock") throw new Error("BILLABLE_SARVAM_BLOCKED");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallOrchestrator.ts:85: const result = await this.options.provider.createLeg({
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallOrchestrator.ts:122: audioIsolationVerified: false, translationEnabled: false, providerMode: this.options.provider.mode,
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallProvider.ts:2: import { Client } from "plivo";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallProvider.ts:3: import { createIndependentPlivoCall, INDEPENDENT_LIVE_CALLS_APPROVED, type IndependentPlivoCallResult } from "./independentPlivoCallCreator.js";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallProvider.ts:17: createLeg(input: IndependentProviderLeg): Promise<IndependentPlivoCallResult>;
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallProvider.ts:29: async createLeg(input: IndependentProviderLeg): Promise<IndependentPlivoCallResult> {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallProvider.ts:47: export class PlivoIndependentCallProvider implements IndependentCallProvider {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallProvider.ts:50: async createLeg(input: IndependentProviderLeg): Promise<IndependentPlivoCallResult> {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallProvider.ts:52: return createIndependentPlivoCall({ ...this.config, ...input });
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallRoutes.ts:1: import { externalCallbackUrl, callbackParams, signedRequestParams } from "./plivoCallbackRequest.js";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallRoutes.ts:6: import type { PlivoWebhookRequestInput } from "./plivoWebhookRequestGuard.js";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallRoutes.ts:7: import { guardPlivoWebhookRequest } from "./plivoWebhookRequestGuard.js";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallRoutes.ts:31: { path: "/plivo/independent/answered", action: "answered" },
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallRoutes.ts:32: { path: "/plivo/independent/stream-status", action: "stream-status" },
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallRoutes.ts:33: { path: "/plivo/independent/stream-started", action: "stream-started" },
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallRoutes.ts:34: { path: "/plivo/independent/stream-stopped", action: "stream-stopped" },
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallRoutes.ts:35: { path: "/plivo/independent/completed", action: "completed" },
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallRoutes.ts:44: const webhook: PlivoWebhookRequestInput = {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallRoutes.ts:49: if (!guardPlivoWebhookRequest(webhook).allowed) throw new Error("PLIVO_WEBHOOK_UNAUTHORIZED");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallRoutes.ts:72: // Both forms occur in current Plivo documentation; unknown event names fail closed.
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentCallSessionEngine.ts:165: "Live translation blocked: Plivo audio isolation unverified"
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentPlivoCallCreator.ts:1: import { Client } from "plivo";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentPlivoCallCreator.ts:6: export interface IndependentPlivoCallInput {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentPlivoCallCreator.ts:15: export interface IndependentPlivoCallResult {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentPlivoCallCreator.ts:21: * Creates a separate outbound Plivo call.
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentPlivoCallCreator.ts:29: export async function createIndependentPlivoCall(
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentPlivoCallCreator.ts:30: input: IndependentPlivoCallInput
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentPlivoCallCreator.ts:31: ): Promise<IndependentPlivoCallResult> {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentPlivoCallCreator.ts:39: throw new Error("Missing Plivo call configuration");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentPlivoCallCreator.ts:50: throw new Error("Invalid Plivo answer URL");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentPlivoCallCreator.ts:62: throw new Error("Invalid Plivo hangup URL");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentTranslationPipeline.ts:4: import { providerStage, type SarvamProviders } from "./sarvamPipelineAdapters.js";
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentTranslationPipeline.ts:11: export class MockPlaybackSink {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentTranslationPipeline.ts:17: readonly gates = Object.freeze({ documentationContractVerified: true, offlineSimulationIsolation: true, actualAudioIsolationVerified: false, productionTranslationAuthorized: false });
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentTranslationPipeline.ts:30: constructor(readonly sessionId: string, private readonly providers: SarvamProviders, private readonly timeoutMs = 2000) {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentTranslationPipeline.ts:31: if (providers.mode !== "mock") throw new Error("BILLABLE_SARVAM_BLOCKED");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentTranslationPipeline.ts:120: drainMock(role: Role, sink: MockPlaybackSink, authorization: { offlineTranslationAuthorized: boolean; simulatedIsolationVerified: boolean }) {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentTranslationPipeline.ts:121: if (!authorization.offlineTranslationAuthorized || !authorization.simulatedIsolationVerified) throw new Error("OFFLINE_PLAYBACK_GATE_CLOSED");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\independentTranslationPipeline.ts:130: productionPlayback(): never { throw new Error("AUDIO_ISOLATION_UNVERIFIED"); }
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:27: const sarvamApiKey = process.env.SARVAM_API_KEY;
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:29: if (!sarvamApiKey) {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:30: throw new Error("SARVAM_API_KEY is missing from root .env");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:33: const SARVAM_API_KEY: string = sarvamApiKey;
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:41: "https://api.sarvam.ai/translate",
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:46: "api-subscription-key": SARVAM_API_KEY
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:52: model: "sarvam-translate:v1"
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:64: `Sarvam translation HTTP ${response.status}: ${body}`
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:74: "Sarvam response missing translated_text"
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:154: return `plivo-${providerCallId}`;
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:157: return `plivo-${crypto.randomUUID()}`;
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:183: // PLIVO INBOUND WEBHOOK
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:186: app.all("/plivo/inbound", async (request, reply) => {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:263: 'plivo',
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:292: 'PLIVO_INBOUND_WEBHOOK',
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:294: 'plivo',
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:309: Plivo
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:327: statusCallbackUrl="${escapeXml(`${PUBLIC_BASE_URL}/plivo/stream-status`)}"
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:328: statusCallbackMethod="POST">${escapeXml(`${websocketUrl}/plivo/stream`)}</Stream>
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:352: // PLIVO AUDIO STREAM
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:356: "/plivo/stream",
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:359: request.log.info("PLIVO WEBSOCKET CONNECTED");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:366: let sarvamSocket: WebSocket | null = null;
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:367: let sarvamReady = false;
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:476: "PLIVO SOCKET NOT OPEN FOR TTS"
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:484: "https://api.sarvam.ai/text-to-speech",
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:489: "api-subscription-key": SARVAM_API_KEY,
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:508: `Sarvam TTS HTTP ${response.status}: ${errorText}`
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:520: throw new Error("Sarvam TTS returned no audio");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:524: * Plivo bidirectional stream is already configured as:
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:527: * Sarvam returns base64 encoded raw mu-law audio,
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:549: console.log("PLIVO CHECKPOINT : SENT");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:554: console.log(" NUNES TAMIL TTS -> PLIVO");
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:567: const connectSarvam = () => {
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:568: const sarvamKeyterms = encodeURIComponent(
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:596: const sarvamUrl =
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:597: "wss://api.sarvam.ai/speech-to-text-realtime/ws" +
+C:\Users\NUNES\Downloads\NUNES_SMART_LIVE_VOICE_TRANSLATOR_PHASE1\nunes-smart-live-voice-translator\apps\realtime-server\src\index.before-entity-repair-v1.ts:601: "&keyterms=" + sarvamKeyterms +
+

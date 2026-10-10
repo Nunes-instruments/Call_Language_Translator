@@ -1,3 +1,18 @@
+import { registerIndependentCallFeature } from "./independentCallFeature.js";
+import { ManagementStore } from "../../../packages/database/src/managementStore.js";
+import { postgresConnection } from "../../../packages/database/src/postgresConnection.js";
+import { registerManagementRoutes } from "./managementRoutes.js";
+import { ControlledPilotManager, registerControlledPilotRoutes } from "./controlledPilotController.js";
+import { externalCallbackUrl, signedRequestParams, guardLegacyStreamUpgrade, createLegacyStreamStartGuard } from "./plivoCallbackRequest.js";
+import { getTranslationTestMode } from "./translationTestMode.js";
+import { IndependentLiveCallManager } from "./independentLiveCallManager.js";
+import { guardPlivoWebhookRequest } from "./plivoWebhookRequestGuard.js";
+import {
+  LiveStreamSecurityManager,
+  validateMulaw8kAudio,
+  type CallLegRole,
+  type LiveDualLegSession,
+} from "./liveStreamSecurity.js";
 import Fastify from "fastify";
 import { SmartLanguageRouter, detectMixedLanguage } from "@nunes/language-router";
 import {
@@ -14,6 +29,7 @@ import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import WebSocket from "ws";
 import speech from "@google-cloud/speech";
+import plivo from "plivo";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -136,9 +152,163 @@ async function translateHindiToTamilSafe(input: string) {
   };
 }
 
+async function translateTamilToHindiSafe(input: string) {
+  const protectedResult = protectEntities(input);
+
+  const startedAt = performance.now();
+
+  const response = await fetch(
+    "https://api.sarvam.ai/translate",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-subscription-key": SARVAM_API_KEY
+      },
+      body: JSON.stringify({
+        input: protectedResult.text,
+        source_language_code: "ta-IN",
+        target_language_code: "hi-IN",
+        model: "sarvam-translate:v1"
+      })
+    }
+  );
+
+  const latencyMs =
+    Math.round(performance.now() - startedAt);
+
+  const body = await response.text();
+
+  if (!response.ok) {
+    throw new Error(
+      `Sarvam translation HTTP ${response.status}: ${body}`
+    );
+  }
+
+  const result = JSON.parse(body) as {
+    translated_text?: unknown;
+  };
+
+  if (typeof result.translated_text !== "string") {
+    throw new Error(
+      "Sarvam response missing translated_text"
+    );
+  }
+
+  const restoredText = restoreEntities(
+    result.translated_text,
+    protectedResult.entities
+  );
+
+  let finalText = restoredText;
+
+  let integrity = verifyEntityIntegrity(
+    finalText,
+    protectedResult.entities
+  );
+
+  let entityRepairApplied = false;
+
+  if (!integrity.valid) {
+    const missingEntities = [...new Set(integrity.missing)];
+
+    for (const missingEntity of missingEntities) {
+      if (!finalText.includes(missingEntity)) {
+        finalText = `${finalText.trim()} ${missingEntity}`.trim();
+      }
+    }
+
+    integrity = verifyEntityIntegrity(
+      finalText,
+      protectedResult.entities
+    );
+
+    entityRepairApplied = true;
+  }
+
+  if (!integrity.valid) {
+    throw new Error(
+      `Entity integrity repair failed: ${integrity.missing.join(", ")}`
+    );
+  }
+
+  return {
+    text: finalText,
+    latencyMs,
+    entityRepairApplied,
+    entities:
+      protectedResult.entities.map(
+        entity => entity.original
+      )
+  };
+}
+
+async function synthesizeTamilAudio(text: string): Promise<Buffer> {
+  const response = await fetch("https://api.sarvam.ai/text-to-speech", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-subscription-key": SARVAM_API_KEY,
+    },
+    body: JSON.stringify({
+      text: text.trim(),
+      target_language_code: "ta-IN",
+      language_code: "ta-IN",
+      speaker: "shubh",
+      model: "bulbul:v3",
+      pace: 1.0,
+      speech_sample_rate: 8000,
+      output_audio_codec: "mulaw"
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Sarvam TTS HTTP ${response.status}: ${errorText}`);
+  }
+
+  const body = await response.json() as { audios?: string[] };
+  const audio = body.audios?.[0];
+  if (!audio) throw new Error("Sarvam TTS returned no audio");
+  return Buffer.from(audio, "base64");
+}
+
+async function synthesizeHindiAudio(text: string): Promise<Buffer> {
+  const response = await fetch("https://api.sarvam.ai/text-to-speech", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-subscription-key": SARVAM_API_KEY,
+    },
+    body: JSON.stringify({
+      text: text.trim(),
+      target_language_code: "hi-IN",
+      language_code: "hi-IN",
+      speaker: "shubh",
+      model: "bulbul:v3",
+      pace: 1.0,
+      speech_sample_rate: 8000,
+      output_audio_codec: "mulaw"
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Sarvam TTS HTTP ${response.status}: ${errorText}`);
+  }
+
+  const body = await response.json() as { audios?: string[] };
+  const audio = body.audios?.[0];
+  if (!audio) throw new Error("Sarvam TTS returned no audio");
+  return Buffer.from(audio, "base64");
+}
+
 const PUBLIC_BASE_URL =
   process.env.PUBLIC_BASE_URL ||
   "https://remote-material-staple.ngrok-free.dev";
+
+const PUBLIC_WS_URL =
+  PUBLIC_BASE_URL.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -215,10 +385,197 @@ app.get("/health", async () => {
 });
 
 // ============================================================
+// CALL MODE CONFIGURATION & GATES
+// ============================================================
+type NunesCallMode = "NORMAL_CALL" | "LIVE_TRANSLATION";
+let activeCallMode: NunesCallMode = ((process.env.NUNES_CALL_MODE ?? "NORMAL_CALL").trim().toUpperCase() as NunesCallMode);
+let actualAudioIsolationVerified = false;
+let translationPlaybackApproved = process.env.NUNES_TRANSLATION_PLAYBACK_APPROVED === "true";
+
+const liveStreamSecurityManager = new LiveStreamSecurityManager();
+
+function createSarvamWsClient(params: {
+  role: "customer" | "staff";
+  sessionId: string;
+  onTranscript: (transcript: string) => void;
+  onError: (error: Error) => void;
+}): WebSocket {
+  const languageCode = params.role === "customer" ? "hi-IN" : "ta-IN";
+  const sarvamKeyterms = encodeURIComponent(
+    JSON.stringify([
+      "Fluke", "GE Druck", "Druck", "DPI 620G", "Fluke pressure calibrator",
+      "GE Druck DPI 620G", "pressure calibrator", "temperature calibrator",
+      "process calibrator", "loop calibrator", "multifunction calibrator",
+      "dry block calibrator", "pressure gauge", "manometer", "multimeter",
+      "oscilloscope", "4-20 mA", "GST", "ASTM", "ISO", "quotation",
+      "delivery time", "IndiaMART", "Nunes Instrumentation"
+    ])
+  );
+  const sarvamUrl =
+    "wss://api.sarvam.ai/speech-to-text-realtime/ws" +
+    `?language_code=${languageCode}` +
+    "&model=saaras:v4" +
+    "&mode=codemix" +
+    "&keyterms=" + sarvamKeyterms +
+    "&encoding=mulaw" +
+    "&sample_rate=8000" +
+    "&stream_type=balanced" +
+    "&endpointing=vad" +
+    "&silence_duration_ms=600" +
+    "&min_speech_duration_ms=250";
+
+  const ws = new WebSocket(sarvamUrl, {
+    headers: {
+      "Api-Subscription-Key": SARVAM_API_KEY,
+    },
+  });
+
+  ws.on("message", (data) => {
+    try {
+      const result = JSON.parse(data.toString()) as Record<string, unknown>;
+      const transcript =
+        typeof result.transcript === "string"
+          ? result.transcript
+          : typeof result.text === "string"
+            ? result.text
+            : null;
+      const event =
+        typeof result.event === "string"
+          ? result.event
+          : typeof result.type === "string"
+            ? result.type
+            : "transcript";
+
+      if (transcript?.trim() && (event === "transcript.final" || event.includes("final"))) {
+        params.onTranscript(transcript.trim());
+      }
+    } catch {
+      // ignore parse
+    }
+  });
+
+  ws.on("error", (err) => {
+    params.onError(err);
+  });
+
+  return ws;
+}
+
+// ============================================================
 // PLIVO INBOUND WEBHOOK
 // ============================================================
 
+const independentLiveCallManager = new IndependentLiveCallManager();
+const managementStore = process.env.NUNES_MANAGEMENT_ENABLED === "true" ? new ManagementStore(postgresConnection(sql)) : undefined;
+if (managementStore) { await managementStore.health(); await managementStore.recover(); await registerManagementRoutes(app,{ store:managementStore,env:process.env }); }
+const independentCallOrchestrator = await registerIndependentCallFeature(app, { env: process.env, manager: independentLiveCallManager, store: managementStore });
+const controlledPilotManager = new ControlledPilotManager(independentCallOrchestrator, {
+  allowlist: process.env.NUNES_PILOT_CUSTOMER_NUMBER && process.env.NUNES_PILOT_STAFF_PHONE_NUMBER ? {
+    customerNumber: process.env.NUNES_PILOT_CUSTOMER_NUMBER,
+    staffNumber: process.env.NUNES_PILOT_STAFF_PHONE_NUMBER,
+  } : undefined,
+  storagePath: path.join(process.cwd(), ".pilot-authorizations.json"),
+});
+await registerControlledPilotRoutes(app, {
+  manager: controlledPilotManager,
+  adminPassword: process.env.NUNES_ADMIN_PASSWORD,
+});
+if (process.env.NUNES_INDEPENDENT_CALLS_ENABLED === "true") app.get(
+  "/internal/independent-call-session/:sessionId",
+  async (request, reply) => {
+    const configuredPassword = process.env.NUNES_ADMIN_PASSWORD;
+
+    if (!configuredPassword) {
+      return reply.code(503).send({ error: "Unavailable" });
+    }
+
+    const authorization = request.headers.authorization;
+
+    if (
+      typeof authorization !== "string" ||
+      !authorization.startsWith("Bearer ")
+    ) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+
+    const providedPassword = authorization.slice(7);
+
+    const expected = Buffer.from(configuredPassword, "utf8");
+    const actual = Buffer.from(providedPassword, "utf8");
+
+    const { timingSafeEqual } = await import("node:crypto");
+
+    if (
+      actual.length !== expected.length ||
+      !timingSafeEqual(actual, expected)
+    ) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+
+    const { sessionId } = request.params as {
+      sessionId: string;
+    };
+
+    const record = independentLiveCallManager.get(sessionId);
+    const session = independentLiveCallManager.getSession(sessionId);
+
+    if (!record || !session) {
+      return reply.code(404).send({ error: "Session not found" });
+    }
+
+    return reply.send({
+      sessionId: record.sessionId,
+      state: record.state,
+      createdAt: record.createdAt,
+      customer: {
+        connected: session.customer.connected,
+        streamAttached: Boolean(session.customer.streamId),
+      },
+      staff: {
+        connected: session.staff.connected,
+        streamAttached: Boolean(session.staff.streamId),
+      },
+      translationEnabled: false,
+      closed: session.closed,
+    });
+  }
+);
 app.all("/plivo/inbound", async (request, reply) => {
+  const authToken = process.env.PLIVO_AUTH_TOKEN?.trim();
+
+  const baseUrl = process.env.PUBLIC_BASE_URL?.trim();
+
+  if (!authToken || !baseUrl) {
+    request.log.error("Plivo webhook security configuration missing");
+    return reply.code(503).send("Webhook unavailable");
+  }
+
+  let callbackUrl: string;
+  let params: Record<string, string>;
+  try {
+    callbackUrl = externalCallbackUrl(baseUrl, request.url, "/plivo/inbound");
+    params = signedRequestParams(request);
+  } catch {
+    return reply.code(403).send("Forbidden");
+  }
+
+  const result = guardPlivoWebhookRequest({
+    method: request.method,
+    callbackUrl,
+    headers: request.headers,
+    params: request.method === "GET" ? {} : params,
+    authToken,
+  });
+
+  if (!result.allowed) {
+    request.log.warn(
+      { reason: result.reason },
+      "Plivo webhook rejected"
+    );
+
+    return reply.code(403).send("Forbidden");
+  }
+
   try {
     const body =
       request.body && typeof request.body === "object"
@@ -231,15 +588,10 @@ app.all("/plivo/inbound", async (request, reply) => {
         : {};
 
     const getValue = (key: string): string | undefined => {
-      const bodyValue = body[key];
-      const queryValue = query[key];
+      const signedValue = params[key];
 
-      if (typeof bodyValue === "string" && bodyValue.trim()) {
-        return bodyValue.trim();
-      }
-
-      if (typeof queryValue === "string" && queryValue.trim()) {
-        return queryValue.trim();
+      if (typeof signedValue === "string" && signedValue.trim()) {
+        return signedValue.trim();
       }
 
       return undefined;
@@ -349,13 +701,11 @@ app.all("/plivo/inbound", async (request, reply) => {
       Next step adds bidirectional media streaming.
     */
 
-    const staffPhoneNumber =
-      process.env.STAFF_PHONE_NUMBER?.trim();
+    const allowedCustomer = process.env.NUNES_PILOT_CUSTOMER_NUMBER?.trim();
+    const allowedStaff = (process.env.NUNES_PILOT_STAFF_PHONE_NUMBER ?? process.env.STAFF_PHONE_NUMBER)?.trim();
+    const plivoNumber = process.env.PLIVO_NUMBER?.trim();
 
-    const plivoNumber =
-      process.env.PLIVO_NUMBER?.trim();
-
-    if (!staffPhoneNumber) {
+    if (!allowedStaff) {
       throw new Error("STAFF_PHONE_NUMBER is missing");
     }
 
@@ -363,16 +713,128 @@ app.all("/plivo/inbound", async (request, reply) => {
       throw new Error("PLIVO_NUMBER is missing");
     }
 
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+    // Check Emergency Stop
+    if (controlledPilotManager.getStatus().emergencyStopEngaged) {
+      request.log.warn({ from: maskPhone(from) }, "Inbound call rejected: Emergency Stop engaged");
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Speak language="en-US">The translation service is currently paused for maintenance. Please try again later.</Speak>
+  <Hangup/>
+</Response>`;
+      return reply.code(200).header("Content-Type", "application/xml; charset=utf-8").send(xml);
+    }
+
+    // Validate Customer Allowlist
+    const normalizedFrom = from ? (from.startsWith("+") ? from : `+${from}`) : "";
+    if (allowedCustomer && normalizedFrom !== allowedCustomer) {
+      request.log.warn({ from: maskPhone(from), expected: maskPhone(allowedCustomer) }, "Inbound call rejected: Caller not on pilot allowlist");
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Speak language="en-US">Thank you for calling NUNES Instruments. This pilot number is currently restricted to authorized test participants.</Speak>
+  <Hangup/>
+</Response>`;
+      return reply.code(200).header("Content-Type", "application/xml; charset=utf-8").send(xml);
+    }
+
+    // ============================================================
+    // MODE SELECTION: NORMAL_CALL (Fallback) vs LIVE_TRANSLATION
+    // ============================================================
+    request.log.info({ from: maskPhone(from), activeCallMode }, `[NUNES ROUTING] Active mode: ${activeCallMode}`);
+
+    if (activeCallMode === "NORMAL_CALL") {
+      // Normal Two-Way Voice Call Bridge with 180s (3-minute) timeout limit
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Dial callerId="${escapeXml(plivoNumber)}"
+        timeLimit="180"
+        timeout="60"
         callbackUrl="${escapeXml(`${PUBLIC_BASE_URL}/plivo/dial-status`)}"
         callbackMethod="POST">
-    <Number>${escapeXml(staffPhoneNumber)}</Number>
+    <Number>${escapeXml(allowedStaff)}</Number>
   </Dial>
 </Response>`;
 
-    reply
+      return reply
+        .code(200)
+        .header("Content-Type", "application/xml; charset=utf-8")
+        .send(xml);
+    }
+
+    // ============================================================
+    // LIVE_TRANSLATION MODE: DUAL INDEPENDENT MEDIA LEGS
+    // ============================================================
+    const liveSessionId = sessionId ? String(sessionId) : crypto.randomUUID();
+    let liveSession = liveStreamSecurityManager.getSession(liveSessionId);
+    if (!liveSession) {
+      liveSession = liveStreamSecurityManager.createSession({
+        sessionId: liveSessionId,
+        customerPhone: normalizedFrom || (allowedCustomer ?? "+919087768000"),
+        staffPhone: allowedStaff,
+        customerCallUuid: providerCallId,
+      });
+    }
+
+    // Outbound leg to staff phone (+919159267000)
+    const plivoAuthId = process.env.PLIVO_AUTH_ID?.trim();
+    const plivoAuthToken = process.env.PLIVO_AUTH_TOKEN?.trim();
+    if (plivoAuthId && plivoAuthToken) {
+      const plivoClient = new plivo.Client(plivoAuthId, plivoAuthToken);
+      try {
+        const staffAnswerUrl = `${PUBLIC_BASE_URL}/plivo/staff-answer?sessionId=${liveSessionId}&role=staff&token=${liveSession.staffToken}`;
+        const staffHangupUrl = `${PUBLIC_BASE_URL}/plivo/staff-hangup?sessionId=${liveSessionId}&role=staff&token=${liveSession.staffToken}`;
+        const staffCallRes = await plivoClient.calls.create(
+          plivoNumber,
+          allowedStaff,
+          staffAnswerUrl,
+          {
+            answerMethod: "POST",
+            hangupUrl: staffHangupUrl,
+            hangupMethod: "POST",
+            timeLimit: 180,
+            ringTimeout: 60,
+          }
+        );
+        request.log.info({ staffCallRequestUuid: staffCallRes.requestUuid, to: maskPhone(allowedStaff) }, "[NUNES] Outbound staff media leg placed");
+        if (sessionId) {
+          await sql`
+            INSERT INTO call_events (
+              call_session_id,
+              event_type,
+              direction,
+              provider,
+              metadata
+            )
+            VALUES (
+              ${sessionId},
+              'STAFF_OUTBOUND_LEG_INITIATED',
+              'OUTBOUND',
+              'plivo',
+              ${sql.json({
+                requestUuid: staffCallRes.requestUuid,
+                staffMasked: maskPhone(allowedStaff),
+              })}
+            )
+          `;
+        }
+      } catch (staffCallErr) {
+        request.log.error(staffCallErr, "[NUNES] Outbound staff media leg call creation error");
+      }
+    }
+
+    // Return Customer Leg Stream XML
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Stream bidirectional="true"
+          keepCallAlive="true"
+          contentType="audio/x-mulaw;rate=8000"
+          statusCallbackUrl="${escapeXml(`${PUBLIC_BASE_URL}/plivo/inbound-stream-status?role=customer&sessionId=${liveSessionId}`)}"
+          statusCallbackMethod="POST">
+    ${escapeXml(`${PUBLIC_WS_URL}/plivo/live-stream?role=customer&sessionId=${liveSessionId}&token=${liveSession.customerToken}`)}
+  </Stream>
+  <Wait length="180"/>
+</Response>`;
+
+    return reply
       .code(200)
       .header("Content-Type", "application/xml; charset=utf-8")
       .send(xml);
@@ -393,14 +855,568 @@ app.all("/plivo/inbound", async (request, reply) => {
 });
 
 // ============================================================
+// DUAL-LEG LIVE TRANSLATION ROUTES & WEBSOCKET
+// ============================================================
+
+app.all("/plivo/staff-answer", async (request, reply) => {
+  const callbackAuthToken = process.env.PLIVO_AUTH_TOKEN?.trim();
+  const callbackBaseUrl = process.env.PUBLIC_BASE_URL?.trim();
+
+  if (callbackAuthToken && callbackBaseUrl) {
+    let callbackUrl: string;
+    let callbackParams: Record<string, string>;
+    try {
+      callbackUrl = externalCallbackUrl(callbackBaseUrl, request.url, "/plivo/staff-answer");
+      callbackParams = signedRequestParams(request);
+      const callbackGuard = guardPlivoWebhookRequest({
+        method: request.method,
+        callbackUrl,
+        headers: request.headers,
+        params: request.method === "GET" ? {} : callbackParams,
+        authToken: callbackAuthToken,
+      });
+      if (!callbackGuard.allowed) {
+        request.log.warn({ reason: callbackGuard.reason }, "Staff answer callback rejected");
+        return reply.code(403).send("Forbidden");
+      }
+    } catch {
+      return reply.code(403).send("Forbidden");
+    }
+  }
+
+  const query = request.query as Record<string, string>;
+  const sessionId = query.sessionId?.trim();
+  const token = query.token?.trim();
+  if (!sessionId) {
+    return reply.code(400).send("Bad Request: Missing sessionId");
+  }
+
+  const session = liveStreamSecurityManager.getSession(sessionId);
+  if (!session || session.closed) {
+    request.log.warn({ sessionId }, "[NUNES] Staff answer rejected: Session not found or closed");
+    return reply.code(404).send("Session not found");
+  }
+
+  if (token && !liveStreamSecurityManager.validateToken(sessionId, "staff", token)) {
+    request.log.warn({ sessionId }, "[NUNES] Staff answer rejected: Invalid staff token");
+    return reply.code(403).send("Forbidden");
+  }
+
+  request.log.info({ sessionId }, "[NUNES] Staff answered outbound call leg");
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Stream bidirectional="true"
+          keepCallAlive="true"
+          contentType="audio/x-mulaw;rate=8000"
+          statusCallbackUrl="${escapeXml(`${PUBLIC_BASE_URL}/plivo/inbound-stream-status?role=staff&sessionId=${sessionId}`)}"
+          statusCallbackMethod="POST">
+    ${escapeXml(`${PUBLIC_WS_URL}/plivo/live-stream?role=staff&sessionId=${sessionId}&token=${session.staffToken}`)}
+  </Stream>
+  <Wait length="180"/>
+</Response>`;
+
+  return reply.code(200).header("Content-Type", "application/xml; charset=utf-8").send(xml);
+});
+
+app.all("/plivo/staff-hangup", async (request, reply) => {
+  const callbackAuthToken = process.env.PLIVO_AUTH_TOKEN?.trim();
+  const callbackBaseUrl = process.env.PUBLIC_BASE_URL?.trim();
+
+  if (callbackAuthToken && callbackBaseUrl) {
+    let callbackUrl: string;
+    let callbackParams: Record<string, string>;
+    try {
+      callbackUrl = externalCallbackUrl(callbackBaseUrl, request.url, "/plivo/staff-hangup");
+      callbackParams = signedRequestParams(request);
+      const callbackGuard = guardPlivoWebhookRequest({
+        method: request.method,
+        callbackUrl,
+        headers: request.headers,
+        params: request.method === "GET" ? {} : callbackParams,
+        authToken: callbackAuthToken,
+      });
+      if (!callbackGuard.allowed) {
+        request.log.warn({ reason: callbackGuard.reason }, "Staff hangup callback rejected");
+        return reply.code(403).send("Forbidden");
+      }
+    } catch {
+      return reply.code(403).send("Forbidden");
+    }
+  }
+
+  const query = request.query as Record<string, string>;
+  const sessionId = query.sessionId?.trim();
+  const token = query.token?.trim();
+  request.log.info({ sessionId }, "[NUNES] Staff leg ended");
+
+  if (sessionId) {
+    if (token && !liveStreamSecurityManager.validateToken(sessionId, "staff", token)) {
+      return reply.code(403).send("Forbidden");
+    }
+    const session = liveStreamSecurityManager.getSession(sessionId);
+    if (session) {
+      liveStreamSecurityManager.deleteSession(sessionId);
+    }
+  }
+
+  return reply.code(200).send({ ok: true });
+});
+
+app.all("/plivo/inbound-stream-status", async (request, reply) => {
+  const callbackAuthToken = process.env.PLIVO_AUTH_TOKEN?.trim();
+  const callbackBaseUrl = process.env.PUBLIC_BASE_URL?.trim();
+
+  if (callbackAuthToken && callbackBaseUrl) {
+    let callbackUrl: string;
+    let callbackParams: Record<string, string>;
+    try {
+      callbackUrl = externalCallbackUrl(callbackBaseUrl, request.url, "/plivo/inbound-stream-status");
+      callbackParams = signedRequestParams(request);
+      const callbackGuard = guardPlivoWebhookRequest({
+        method: request.method,
+        callbackUrl,
+        headers: request.headers,
+        params: request.method === "GET" ? {} : callbackParams,
+        authToken: callbackAuthToken,
+      });
+      if (!callbackGuard.allowed) {
+        request.log.warn({ reason: callbackGuard.reason }, "Inbound stream status callback rejected");
+        return reply.code(403).send("Forbidden");
+      }
+    } catch {
+      return reply.code(403).send("Forbidden");
+    }
+  }
+
+  const query = request.query as Record<string, string>;
+  request.log.info({ query }, "[NUNES] Inbound stream status callback received");
+  return reply.code(200).send({ ok: true });
+});
+
+app.get("/api/call-mode", async () => {
+  return {
+    mode: activeCallMode,
+    fallbackAvailable: true,
+    modes: ["NORMAL_CALL", "LIVE_TRANSLATION"],
+    gates: {
+      actualAudioIsolationVerified,
+      translationPlaybackApproved,
+      emergencyStopEngaged: controlledPilotManager.getStatus().emergencyStopEngaged,
+    },
+    allowlist: {
+      customer: process.env.NUNES_PILOT_CUSTOMER_NUMBER ?? "+919087768000",
+      staff: (process.env.NUNES_PILOT_STAFF_PHONE_NUMBER ?? process.env.STAFF_PHONE_NUMBER) ?? "+919159267000",
+      plivoNumber: process.env.PLIVO_NUMBER ?? "+912264230742",
+    },
+  };
+});
+
+app.post("/api/call-mode", async (request, reply) => {
+  const body = request.body as { mode?: string };
+  const requested = body?.mode?.trim().toUpperCase();
+  if (requested !== "NORMAL_CALL" && requested !== "LIVE_TRANSLATION") {
+    return reply.code(400).send({ error: "Invalid mode. Must be 'NORMAL_CALL' or 'LIVE_TRANSLATION'" });
+  }
+  activeCallMode = requested as NunesCallMode;
+  request.log.info({ mode: activeCallMode }, "[NUNES] Call routing mode updated");
+  return {
+    ok: true,
+    mode: activeCallMode,
+    message: activeCallMode === "NORMAL_CALL"
+      ? "NORMAL CALL mode active: Uses direct Plivo <Dial> bridge"
+      : "LIVE TRANSLATION mode active: Uses independent customer & staff media streams via Sarvam AI"
+  };
+});
+
+app.post("/api/playback-approval", async (request, reply) => {
+  const body = request.body as { approved?: boolean; isolationVerified?: boolean };
+  if (typeof body?.isolationVerified === "boolean") {
+    actualAudioIsolationVerified = body.isolationVerified;
+  }
+  if (typeof body?.approved === "boolean") {
+    translationPlaybackApproved = body.approved;
+  }
+  request.log.info({ actualAudioIsolationVerified, translationPlaybackApproved }, "[NUNES] Playback approval updated");
+  return {
+    ok: true,
+    actualAudioIsolationVerified,
+    translationPlaybackApproved,
+  };
+});
+
+app.get(
+  "/plivo/live-stream",
+  {
+    websocket: true,
+    preValidation: async (request, reply) => {
+      const authToken = process.env.PLIVO_AUTH_TOKEN?.trim();
+      const baseUrl = process.env.PUBLIC_BASE_URL?.trim();
+
+      if (authToken && baseUrl) {
+        try {
+          const callbackUrl = externalCallbackUrl(baseUrl, request.url, "/plivo/live-stream");
+          const params = signedRequestParams(request);
+          const guard = guardPlivoWebhookRequest({
+            method: request.method,
+            callbackUrl,
+            headers: request.headers,
+            params: request.method === "GET" ? {} : params,
+            authToken,
+          });
+          if (!guard.allowed) {
+            request.log.warn({ reason: guard.reason }, "Plivo live-stream signature rejected");
+            return reply.code(403).send("Forbidden: Invalid Signature");
+          }
+        } catch {
+          return reply.code(403).send("Forbidden");
+        }
+      }
+
+      const query = request.query as Record<string, string>;
+      const sessionId = query?.sessionId?.trim();
+      const role = query?.role?.trim().toLowerCase() as CallLegRole;
+      const token = query?.token?.trim();
+
+      if (!sessionId || !role || (role !== "customer" && role !== "staff") || !token) {
+        return reply.code(400).send("Bad Request: Missing sessionId, role, or token");
+      }
+
+      if (!liveStreamSecurityManager.validateToken(sessionId, role, token)) {
+        return reply.code(403).send("Forbidden: Invalid Session or Token");
+      }
+
+      const attachCheck = liveStreamSecurityManager.assertCanAttachSocket(sessionId, role);
+      if (!attachCheck.allowed) {
+        return reply.code(attachCheck.status).send(attachCheck.reason);
+      }
+    },
+  },
+  (socket, request) => {
+    const query = request.query as Record<string, string>;
+    const sessionId = query.sessionId.trim();
+    const role = query.role.trim().toLowerCase() as CallLegRole;
+
+    const session = liveStreamSecurityManager.getSession(sessionId);
+    if (!session || session.closed) {
+      socket.close(1008, "Session closed");
+      return;
+    }
+
+    liveStreamSecurityManager.attachSocket(sessionId, role, socket);
+
+    console.log("");
+    console.log("==========================================");
+    console.log(` NUNES DUAL-LEG STREAM CONNECTED: ${role.toUpperCase()}`);
+    console.log("==========================================");
+    console.log(`SESSION : ${sessionId}`);
+    console.log(`ROLE    : ${role}`);
+    console.log(`MODE    : LIVE_TRANSLATION`);
+    console.log("==========================================");
+    console.log("");
+
+    const sarvamWs = createSarvamWsClient({
+      role,
+      sessionId,
+      onTranscript: async (transcript) => {
+        try {
+          if (role === "customer") {
+            // Customer Turn: Hindi speech -> Tamil
+            session.lastCustomerTranscript = transcript;
+            console.log("");
+            console.log("==========================================");
+            console.log(" [STAGE 1] CUSTOMER HINDI SPEECH DETECTED");
+            console.log("==========================================");
+            console.log(`SESSION  : ${sessionId}`);
+            console.log(`HINDI    : ${transcript}`);
+            console.log("==========================================");
+
+            void sql`
+              INSERT INTO call_events (call_session_id, event_type, direction, provider, metadata)
+              SELECT id, 'CUSTOMER_STT_TRANSCRIPT', 'INBOUND', 'sarvam', ${sql.json({ transcript, language: 'hi' })}
+              FROM call_sessions WHERE id::text = ${sessionId} OR call_id = ${sessionId} LIMIT 1
+            `.catch(() => {});
+
+            // Stage 2: Translate Hindi -> Tamil
+            const translated = await translateHindiToTamilSafe(transcript);
+            session.lastTranslationHiToTa = translated.text;
+            console.log("");
+            console.log("==========================================");
+            console.log(" [STAGE 2] TRANSLATION: HINDI -> TAMIL");
+            console.log("==========================================");
+            console.log(`TAMIL    : ${translated.text}`);
+            console.log(`LATENCY  : ${translated.latencyMs} ms`);
+            console.log("==========================================");
+
+            void sql`
+              INSERT INTO call_events (call_session_id, event_type, direction, provider, metadata)
+              SELECT id, 'TRANSLATION_COMPLETED', 'INTERNAL', 'sarvam', ${sql.json({
+                sourceLanguage: 'hi-IN',
+                targetLanguage: 'ta-IN',
+                sourceText: transcript,
+                translatedText: translated.text,
+                latencyMs: translated.latencyMs
+              })}
+              FROM call_sessions WHERE id::text = ${sessionId} OR call_id = ${sessionId} LIMIT 1
+            `.catch(() => {});
+
+            // Stage 3: Synthesize Tamil TTS Audio
+            const tamilAudio = await synthesizeTamilAudio(translated.text);
+            session.lastStaffTtsBytes = tamilAudio.length;
+            console.log("");
+            console.log("==========================================");
+            console.log(" [STAGE 3] TAMIL TTS SYNTHESIZED");
+            console.log("==========================================");
+            console.log(`BYTES    : ${tamilAudio.length} (8kHz mu-law)`);
+            console.log("==========================================");
+
+            void sql`
+              INSERT INTO call_events (call_session_id, event_type, direction, provider, metadata)
+              SELECT id, 'TTS_SYNTHESIZED', 'OUTBOUND', 'sarvam', ${sql.json({
+                language: 'ta-IN',
+                audioBytes: tamilAudio.length,
+                destination: 'staff'
+              })}
+              FROM call_sessions WHERE id::text = ${sessionId} OR call_id = ${sessionId} LIMIT 1
+            `.catch(() => {});
+
+            // Stage 4: Playback Gate Verification & Dispatch to STAFF stream only
+            const dispatchResult = liveStreamSecurityManager.dispatchPlayback(
+              sessionId,
+              "staff",
+              tamilAudio,
+              { actualAudioIsolationVerified, translationPlaybackApproved }
+            );
+
+            if (dispatchResult.dispatched) {
+              console.log(" [STAGE 4] PLAY AUDIO DISPATCHED TO STAFF PHONE");
+              void sql`
+                INSERT INTO call_events (call_session_id, event_type, direction, provider, metadata)
+                SELECT id, 'PLAYBACK_DISPATCHED', 'OUTBOUND', 'plivo', ${sql.json({
+                  destination: 'staff',
+                  streamId: session.staffStreamId ?? null,
+                  audioBytes: tamilAudio.length
+                })}
+                FROM call_sessions WHERE id::text = ${sessionId} OR call_id = ${sessionId} LIMIT 1
+              `.catch(() => {});
+            } else {
+              console.log(` [STAGE 4] PLAYBACK GATED: Staff ear-piece protected (${dispatchResult.reason})`);
+              void sql`
+                INSERT INTO call_events (call_session_id, event_type, direction, provider, metadata)
+                SELECT id, 'PLAYBACK_GATED', 'OUTBOUND', 'system', ${sql.json({
+                  reason: dispatchResult.reason,
+                  destination: 'staff',
+                  audioBytes: tamilAudio.length
+                })}
+                FROM call_sessions WHERE id::text = ${sessionId} OR call_id = ${sessionId} LIMIT 1
+              `.catch(() => {});
+            }
+
+          } else {
+            // Staff Turn: Tamil speech -> Hindi
+            session.lastStaffTranscript = transcript;
+            console.log("");
+            console.log("==========================================");
+            console.log(" [STAGE 1] STAFF TAMIL SPEECH DETECTED");
+            console.log("==========================================");
+            console.log(`SESSION  : ${sessionId}`);
+            console.log(`TAMIL    : ${transcript}`);
+            console.log("==========================================");
+
+            void sql`
+              INSERT INTO call_events (call_session_id, event_type, direction, provider, metadata)
+              SELECT id, 'STAFF_STT_TRANSCRIPT', 'INBOUND', 'sarvam', ${sql.json({ transcript, language: 'ta' })}
+              FROM call_sessions WHERE id::text = ${sessionId} OR call_id = ${sessionId} LIMIT 1
+            `.catch(() => {});
+
+            // Stage 2: Translate Tamil -> Hindi
+            const translated = await translateTamilToHindiSafe(transcript);
+            session.lastTranslationTaToHi = translated.text;
+            console.log("");
+            console.log("==========================================");
+            console.log(" [STAGE 2] TRANSLATION: TAMIL -> HINDI");
+            console.log("==========================================");
+            console.log(`HINDI    : ${translated.text}`);
+            console.log(`LATENCY  : ${translated.latencyMs} ms`);
+            console.log("==========================================");
+
+            void sql`
+              INSERT INTO call_events (call_session_id, event_type, direction, provider, metadata)
+              SELECT id, 'TRANSLATION_COMPLETED', 'INTERNAL', 'sarvam', ${sql.json({
+                sourceLanguage: 'ta-IN',
+                targetLanguage: 'hi-IN',
+                sourceText: transcript,
+                translatedText: translated.text,
+                latencyMs: translated.latencyMs
+              })}
+              FROM call_sessions WHERE id::text = ${sessionId} OR call_id = ${sessionId} LIMIT 1
+            `.catch(() => {});
+
+            // Stage 3: Synthesize Hindi TTS Audio
+            const hindiAudio = await synthesizeHindiAudio(translated.text);
+            session.lastCustomerTtsBytes = hindiAudio.length;
+            console.log("");
+            console.log("==========================================");
+            console.log(" [STAGE 3] HINDI TTS SYNTHESIZED");
+            console.log("==========================================");
+            console.log(`BYTES    : ${hindiAudio.length} (8kHz mu-law)`);
+            console.log("==========================================");
+
+            void sql`
+              INSERT INTO call_events (call_session_id, event_type, direction, provider, metadata)
+              SELECT id, 'TTS_SYNTHESIZED', 'OUTBOUND', 'sarvam', ${sql.json({
+                language: 'hi-IN',
+                audioBytes: hindiAudio.length,
+                destination: 'customer'
+              })}
+              FROM call_sessions WHERE id::text = ${sessionId} OR call_id = ${sessionId} LIMIT 1
+            `.catch(() => {});
+
+            // Stage 4: Playback Gate Verification & Dispatch to CUSTOMER stream only
+            const dispatchResult = liveStreamSecurityManager.dispatchPlayback(
+              sessionId,
+              "customer",
+              hindiAudio,
+              { actualAudioIsolationVerified, translationPlaybackApproved }
+            );
+
+            if (dispatchResult.dispatched) {
+              console.log(" [STAGE 4] PLAY AUDIO DISPATCHED TO CUSTOMER PHONE");
+              void sql`
+                INSERT INTO call_events (call_session_id, event_type, direction, provider, metadata)
+                SELECT id, 'PLAYBACK_DISPATCHED', 'OUTBOUND', 'plivo', ${sql.json({
+                  destination: 'customer',
+                  streamId: session.customerStreamId ?? null,
+                  audioBytes: hindiAudio.length
+                })}
+                FROM call_sessions WHERE id::text = ${sessionId} OR call_id = ${sessionId} LIMIT 1
+              `.catch(() => {});
+            } else {
+              console.log(` [STAGE 4] PLAYBACK GATED: Customer ear-piece protected (${dispatchResult.reason})`);
+              void sql`
+                INSERT INTO call_events (call_session_id, event_type, direction, provider, metadata)
+                SELECT id, 'PLAYBACK_GATED', 'OUTBOUND', 'system', ${sql.json({
+                  reason: dispatchResult.reason,
+                  destination: 'customer',
+                  audioBytes: hindiAudio.length
+                })}
+                FROM call_sessions WHERE id::text = ${sessionId} OR call_id = ${sessionId} LIMIT 1
+              `.catch(() => {});
+            }
+          }
+        } catch (procErr) {
+          console.error("Speech processing error:", procErr);
+        }
+      },
+      onError: (err) => {
+        console.warn(`[SARVAM STT ERROR] (${role}):`, err.message);
+      }
+    });
+
+    if (role === "customer") {
+      session.customerSarvamWs = sarvamWs;
+    } else {
+      session.staffSarvamWs = sarvamWs;
+    }
+
+    socket.on("message", (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (msg.event === "start" && msg.start && typeof msg.start === "object") {
+          const st = msg.start as { streamId?: string; callId?: string };
+          const attachRes = liveStreamSecurityManager.attachStream(sessionId, role, st.streamId || "", st.callId);
+          if (!attachRes.allowed) {
+            console.warn(`[STREAM REJECTED] role=${role} sessionId=${sessionId} reason=${attachRes.reason}`);
+            socket.close(1008, attachRes.reason ?? "Invalid stream");
+            return;
+          }
+          console.log(`[PLIVO STREAM START] role=${role} streamId=${st.streamId} callId=${st.callId}`);
+          void sql`
+            INSERT INTO call_events (call_session_id, event_type, direction, provider, metadata)
+            SELECT id, 'STREAM_STARTED', 'INBOUND', 'plivo', ${sql.json({ role, streamId: st.streamId, callId: st.callId })}
+            FROM call_sessions WHERE id::text = ${sessionId} OR call_id = ${sessionId} LIMIT 1
+          `.catch(() => {});
+        } else if (msg.event === "media" && msg.media && typeof msg.media === "object") {
+          const m = msg.media as { payload?: string; streamId?: string };
+          const packetCheck = liveStreamSecurityManager.validateMediaPacket(sessionId, role, m.streamId, m.payload);
+          if (packetCheck.allowed && packetCheck.bytes) {
+            if (role === "customer") {
+              session.customerPackets++;
+              session.customerBytes += packetCheck.bytes.length;
+              if (session.customerPackets % 100 === 0) {
+                console.log(`[CUSTOMER MEDIA] Packets: ${session.customerPackets}, Bytes: ${session.customerBytes}`);
+              }
+            } else {
+              session.staffPackets++;
+              session.staffBytes += packetCheck.bytes.length;
+              if (session.staffPackets % 100 === 0) {
+                console.log(`[STAFF MEDIA] Packets: ${session.staffPackets}, Bytes: ${session.staffBytes}`);
+              }
+            }
+
+            if (sarvamWs.readyState === WebSocket.OPEN) {
+              sarvamWs.send(JSON.stringify({ event: "audio_input", audio: m.payload }));
+            }
+          }
+        } else if (msg.event === "checkpoint") {
+          console.log(`[PLIVO CHECKPOINT ACKNOWLEDGED] role=${role} name=${msg.name}`);
+          void sql`
+            INSERT INTO call_events (call_session_id, event_type, direction, provider, metadata)
+            SELECT id, 'PLAYBACK_CHECKPOINT_ACK', 'INBOUND', 'plivo', ${sql.json({ role, checkpoint: typeof msg.name === "string" ? msg.name : "unknown" })}
+            FROM call_sessions WHERE id::text = ${sessionId} OR call_id = ${sessionId} LIMIT 1
+          `.catch(() => {});
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    socket.on("close", () => {
+      console.log(`[PLIVO STREAM CLOSED] role=${role} sessionId=${sessionId}`);
+      liveStreamSecurityManager.disconnectSocket(sessionId, role, socket);
+    });
+  }
+);
+
+// ============================================================
 // PLIVO DIAL DIAGNOSTICS
 // ============================================================
 
 app.all("/plivo/dial-status", async (request, reply) => {
+  const callbackAuthToken = process.env.PLIVO_AUTH_TOKEN?.trim();
+  const callbackBaseUrl = process.env.PUBLIC_BASE_URL?.trim();
+
+  if (!callbackAuthToken || !callbackBaseUrl) {
+    return reply.code(503).send("Webhook unavailable");
+  }
+
+  let callbackUrl: string;
+  let callbackParams: Record<string, string>;
+  try {
+    callbackUrl = externalCallbackUrl(callbackBaseUrl, request.url, "/plivo/dial-status");
+    callbackParams = signedRequestParams(request);
+  } catch {
+    return reply.code(403).send("Forbidden");
+  }
+
+  const callbackGuard = guardPlivoWebhookRequest({
+    method: request.method,
+    callbackUrl,
+    headers: request.headers,
+    params: request.method === "GET" ? {} : callbackParams,
+    authToken: callbackAuthToken,
+  });
+
+  if (!callbackGuard.allowed) {
+    request.log.warn(
+      { reason: callbackGuard.reason },
+      "Plivo callback rejected"
+    );
+    return reply.code(403).send("Forbidden");
+  }
+
   const body =
-    request.body && typeof request.body === "object"
-      ? (request.body as Record<string, unknown>)
-      : {};
+    callbackParams;
 
   const getText = (key: string) =>
     typeof body[key] === "string"
@@ -442,10 +1458,23 @@ app.all("/plivo/dial-status", async (request, reply) => {
 
 app.get(
   "/plivo/stream",
-  { websocket: true },
+  { websocket: true, preValidation: async (request, reply) => {
+    if (!guardLegacyStreamUpgrade(request, process.env.PUBLIC_BASE_URL ?? "", process.env.PLIVO_AUTH_TOKEN)) {
+      return reply.code(403).send("Forbidden");
+    }
+  } },
   (socket, request) => {
     request.log.info("PLIVO WEBSOCKET CONNECTED");
 
+    const acceptStreamStart = createLegacyStreamStartGuard(async (providerCallId) => {
+      const knownCalls = await sql`
+        SELECT id FROM call_sessions
+        WHERE provider_call_id = ${providerCallId}
+          AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
+        LIMIT 1
+      `;
+      return Boolean(knownCalls[0]);
+    });
     let streamId: string | null = null;
     let callId: string | null = null;
     let mediaFrames = 0;
@@ -556,7 +1585,7 @@ app.get(
     };
 
     const synthesizeTamilAndPlay = async (text: string) => {
-      if (!text.trim()) return;
+      if (!getTranslationTestMode(process.env).allowLiveTranslation || !text.trim()) return;
 
       if (socket.readyState !== WebSocket.OPEN) {
         request.log.warn(
@@ -833,6 +1862,7 @@ app.get(
               routerDecision.mode;
 
             if (
+              getTranslationTestMode(process.env).allowLiveTranslation &&
               currentRouterMode === "TRANSLATION_ACTIVE" &&
               routerDecision.stableLanguage === "hi"
             ) {
@@ -920,7 +1950,7 @@ app.get(
                 SET
                   customer_language = ${routerDecision.stableLanguage},
                   mode = ${currentRouterMode},
-                  translated = ${currentRouterMode === "TRANSLATION_ACTIVE"},
+                  translated = ${getTranslationTestMode(process.env).allowLiveTranslation && currentRouterMode === "TRANSLATION_ACTIVE"},
                   updated_at = NOW()
                 WHERE provider_call_id = ${callId}
                    OR id::text = ${callId}
@@ -1032,8 +2062,12 @@ app.get(
         };
 
         if (message.event === "start") {
-          streamId = message.start?.streamId ?? null;
-          callId = message.start?.callId ?? null;
+          if (!await acceptStreamStart(message.start)) {
+            socket.close(1008, "Invalid stream identity");
+            return;
+          }
+          streamId = message.start!.streamId!;
+          callId = message.start!.callId!;
 
           connectSarvam();
           connectGoogleStt();
@@ -1213,10 +2247,40 @@ if (googleRecognizeStream) {
 // ============================================================
 
 app.all("/plivo/stream-status", async (request, reply) => {
+  const callbackAuthToken = process.env.PLIVO_AUTH_TOKEN?.trim();
+  const callbackBaseUrl = process.env.PUBLIC_BASE_URL?.trim();
+
+  if (!callbackAuthToken || !callbackBaseUrl) {
+    return reply.code(503).send("Webhook unavailable");
+  }
+
+  let callbackUrl: string;
+  let callbackParams: Record<string, string>;
+  try {
+    callbackUrl = externalCallbackUrl(callbackBaseUrl, request.url, "/plivo/stream-status");
+    callbackParams = signedRequestParams(request);
+  } catch {
+    return reply.code(403).send("Forbidden");
+  }
+
+  const callbackGuard = guardPlivoWebhookRequest({
+    method: request.method,
+    callbackUrl,
+    headers: request.headers,
+    params: request.method === "GET" ? {} : callbackParams,
+    authToken: callbackAuthToken,
+  });
+
+  if (!callbackGuard.allowed) {
+    request.log.warn(
+      { reason: callbackGuard.reason },
+      "Plivo callback rejected"
+    );
+    return reply.code(403).send("Forbidden");
+  }
+
   const body =
-    request.body && typeof request.body === "object"
-      ? (request.body as Record<string, unknown>)
-      : {};
+    callbackParams;
 
   request.log.info(
     {
@@ -1234,11 +2298,41 @@ app.all("/plivo/stream-status", async (request, reply) => {
 // ============================================================
 
 app.all("/plivo/status", async (request, reply) => {
+  const callbackAuthToken = process.env.PLIVO_AUTH_TOKEN?.trim();
+  const callbackBaseUrl = process.env.PUBLIC_BASE_URL?.trim();
+
+  if (!callbackAuthToken || !callbackBaseUrl) {
+    return reply.code(503).send("Webhook unavailable");
+  }
+
+  let callbackUrl: string;
+  let callbackParams: Record<string, string>;
+  try {
+    callbackUrl = externalCallbackUrl(callbackBaseUrl, request.url, "/plivo/status");
+    callbackParams = signedRequestParams(request);
+  } catch {
+    return reply.code(403).send("Forbidden");
+  }
+
+  const callbackGuard = guardPlivoWebhookRequest({
+    method: request.method,
+    callbackUrl,
+    headers: request.headers,
+    params: request.method === "GET" ? {} : callbackParams,
+    authToken: callbackAuthToken,
+  });
+
+  if (!callbackGuard.allowed) {
+    request.log.warn(
+      { reason: callbackGuard.reason },
+      "Plivo callback rejected"
+    );
+    return reply.code(403).send("Forbidden");
+  }
+
   try {
     const body =
-      request.body && typeof request.body === "object"
-        ? (request.body as Record<string, unknown>)
-        : {};
+      callbackParams;
 
     const providerCallId =
       typeof body.CallUUID === "string"
